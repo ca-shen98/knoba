@@ -1,0 +1,16 @@
+{
+   "background": {
+      "service_worker": "built/background.js"
+   },
+   "content_scripts": [
+      {
+         "js": "built/script.js",
+         "matches": [
+            "https://www.notion.so/*"
+         ]
+      }
+   ],
+   "manifest_version": 3,
+   "name": "knoba",
+   "version": "1.0"
+}
