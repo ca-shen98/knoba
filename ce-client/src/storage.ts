@@ -18,7 +18,7 @@ class InMemoryMapStorageUpdate {
 };
 
 export class InMemoryMapStorage {
-  presleepForTest = 0
+  presleepForTest = 0;
   // thread-safety?
   private inMemoryMapStorage = {
     contentLocations: new Map<string, Set<string>>,
@@ -41,7 +41,7 @@ export class InMemoryMapStorage {
     );
   };
   async getMatches(content: string): Promise<Array<Promise<InMemoryMapStorageMatch>>> {
-    return [...(await (async () => this.inMemoryMapStorage.contentLocations.get(content))() ?? [])].map(async (location) => {
+    return [...(await (async () => this.inMemoryMapStorage.contentLocations.get(content))() ?? new Set)].map(async (location) => {
       return new InMemoryMapStorageMatch(location, content);
     });
   };
@@ -52,7 +52,7 @@ export class InMemoryMapStorage {
   async genUpdates(oldContent: string, newContent: string): Promise<Array<Promise<InMemoryMapStorageUpdate>>> {
     return (await this.getMatches(oldContent)).map(getMatch => getMatch.then(match => this.genUpdate(oldContent, newContent, match)));
   };
-  async updateContent(update: InMemoryMapStorageUpdate, presleepForTest: number = 0): Promise<void> {
+  async updateContent(update: InMemoryMapStorageUpdate): Promise<void> {
     await this.awaitablePresleepForTest();
     (
       (async () => this.inMemoryMapStorage.locationContents.get(update.location)?.add(update.newContent))(),
