@@ -1,13 +1,13 @@
 import { InMemoryMapStorage } from "../src/storage";
 // import { InMemoryMapStorage } from "./src/storage";
 
-// addTrackedContent side effect without await is async
+// addTrackedContent side effect without await is async (should fail)
 // await
 (async () => {
   const inMemoryMapStorage = new InMemoryMapStorage();
   inMemoryMapStorage.presleepForTest = 100;
   inMemoryMapStorage.addTrackedContent('a', 'abc');
-  console.assert((await inMemoryMapStorage.getMatches('abc')).length == 0);
+  console.assert((await inMemoryMapStorage.getMatches('abc')).length == 1); // should fail
 })();
 
 // addTrackedContent side effect
