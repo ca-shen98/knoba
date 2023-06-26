@@ -16,3 +16,17 @@ yarn tsc
 npx ts-node
 yarn ts-node
 ```
+
+need to figure out the prompt
+
+need examples
+
+implement semantic matching
+
+pinecone and embeddings api integration
+
+need secrets/tokens
+
+llm latencies, caching
+
+check out langchain
