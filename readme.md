@@ -7,3 +7,5 @@ periodic scanning whats changed across tracked content location sources
 ingesting entire docs, storing and searching multiple chunking granularities
 
 concurrent edit different sources conflict diffs equivalency
+
+ignoring changes that aren't semantically meaningful

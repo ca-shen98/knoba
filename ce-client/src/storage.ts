@@ -116,7 +116,8 @@ export class ExternalStorage extends BaseStorageMixin implements StorageInterfac
   override async getMatches(content: string): Promise<Array<Promise<InMemoryMapStorageMatch>>> {
     return (async () => {
       // llm calculate embedding for `content` - cache?
-      // get close matches for embedding from vector db
+      // get close, but not equivalent, matches for embedding from vector db
+      // where to filter if embedding of matches and `content` of interest is not same/semantically equivalent
       // map results to InMemoryStorageMatch
       return [];
     })();
