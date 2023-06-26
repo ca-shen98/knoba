@@ -18,12 +18,13 @@ yarn ts-node
 ```
 
 need to figure out the prompt
+- attempt/example 1: https://platform.openai.com/playground/p/fQknB4kOWmTHv2Ws5QwLsJdH?model=text-davinci-003
 
 need examples
 
 implement semantic matching
 
-pinecone and embeddings api integration
+pinecone and embeddings api (openai) integration
 
 need secrets/tokens
 
