@@ -24,9 +24,11 @@ class StorageUpdate {
 };
 
 interface StorageInterface {
+  // TODO upsert, extra id?
   addTrackedContent(location: string, content: string): Promise<void>;
   getMatches(content: string): Promise<Array<Promise<StorageMatch>>>;
   genUpdate(oldContent: string, newContent: string, match: StorageMatch): Promise<StorageUpdate>;
+  // TODO wrapper with optional location id assert location oldcontent?
   genUpdates(oldContent: string, newContent: string): Promise<Array<Promise<StorageUpdate>>>;
   updateContent(update: StorageUpdate): Promise<void>;
 };
@@ -113,31 +115,27 @@ const configuration = new Configuration({
 const openai = new OpenAIApi(configuration);
 export class SemanticMatchingExternalStorage extends BaseStorageMixin implements StorageInterface { // thread-safety?
   index: VectorOperationsApi | null = null; // hacky
-  private locationContents = new Map<string, Set<string>>; // TODO externalize, currently for test/stub, don't need to keep track content in external sources (e.g. notion), access via apis
   override async addTrackedContent(location: string, content: string): Promise<void> { // batch
     await this.awaitablePresleepForTest();
-    (
-      (async () => this.computeIfAbsent(this.locationContents, location, new Set).add(content))(),
-      (async () => {
-        const embedding = (await openai.createEmbedding({ // cache
-            model: 'text-embedding-ada-002',
-            input: content,
-        }))?.data?.data[0]?.embedding; // error handling
-        const upsertRequest = {
-          vectors: [
-            {
-              id: `${location} - ${content}`, // id
-              values: embedding,
-              metadata: {
-                location: location,
-                content: content,
-              },
+    (async () => {
+      const embedding = (await openai.createEmbedding({ // cache
+          model: 'text-embedding-ada-002',
+          input: content,
+      }))?.data?.data[0]?.embedding; // error handling
+      const upsertRequest = {
+        vectors: [
+          {
+            id: `${location} - ${content}`, // id
+            values: embedding,
+            metadata: {
+              location: location,
+              content: content,
             },
-          ],
-        };
-        this.index?.upsert({ upsertRequest });
-      })()
-    );
+          },
+        ],
+      };
+      this.index?.upsert({ upsertRequest });
+    })();
   };
   override async getMatches(content: string): Promise<Array<Promise<StorageMatch>>> {
     return (async () => {
@@ -169,8 +167,6 @@ export class SemanticMatchingExternalStorage extends BaseStorageMixin implements
   override async updateContent(update: StorageUpdate): Promise<void> {
     await this.awaitablePresleepForTest();
     (
-      (async () => this.locationContents.get(update.location)?.add(update.newContent))(),
-      (async () => this.locationContents.get(update.location)?.delete(update.oldContent))(),
       (async () => {
         // TODO put `update.newContentEmbedding` -> (`update.location`, `update.newContent`) in vector db
       })(),

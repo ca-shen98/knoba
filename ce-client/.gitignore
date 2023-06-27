@@ -1,3 +1,5 @@
+.env
+
 built/
 tsconfig.json
 .eslintrc
