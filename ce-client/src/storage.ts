@@ -110,7 +110,7 @@ import { VectorOperationsApi } from '@pinecone-database/pinecone/dist/pinecone-g
 // const index = pinecone.Index('knoba');
 const { Configuration, OpenAIApi } = require('openai'); // lint
 const configuration = new Configuration({
-  apiKey: '<openai key>', // env
+  apiKey: '<openai key>',
 });
 const openai = new OpenAIApi(configuration);
 export class SemanticMatchingExternalStorage extends BaseStorageMixin implements StorageInterface { // thread-safety?
@@ -125,7 +125,7 @@ export class SemanticMatchingExternalStorage extends BaseStorageMixin implements
       const upsertRequest = {
         vectors: [
           {
-            id: `${location} - ${content}`, // id
+            id: `${location}`, // id
             values: embedding,
             metadata: {
               location: location,
@@ -152,7 +152,7 @@ export class SemanticMatchingExternalStorage extends BaseStorageMixin implements
         includeMetadata: true,
       };
       const queryResponse = await this.index?.query({ queryRequest });
-      // TODO map results to InMemoryStorageMatch
+      // TODO map results to StorageMatch
       return [];
     })();
   };
