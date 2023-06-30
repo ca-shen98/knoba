@@ -1,6 +1,6 @@
 const assert = require('assert');
 
-// types
+// types/interfaces
 class StorageMatch<T> {
   location: string;
   content: string;
@@ -108,8 +108,8 @@ export class SemanticMatchingExternalStorage extends BaseStorageMixin<number[]> 
       model: 'text-embedding-ada-002',
       input: content,
     }))?.data?.data[0]?.embedding; // error handling
-    // get close, but not equivalent, matches for embedding from vector db
-    // where to filter if embedding of matches and `content` of interest is not same/semantically equivalent
+    // TODO get close, but not equivalent, matches for embedding from vector db
+    // TODO where to filter if embedding of matches and `content` of interest is not same/semantically equivalent
     const queryRequest = { // pagination
       vector: embedding,
       topK: 10,
@@ -131,7 +131,6 @@ export class SemanticMatchingExternalStorage extends BaseStorageMixin<number[]> 
   override async upsertContent(update: StorageUpdate<number[]>): Promise<void> {
     await this.awaitablePresleepForTest();
     (async () => {
-      // this.index?.delete1({ ids: [update.location] });
       const upsertRequest = {
         vectors: [
           {
