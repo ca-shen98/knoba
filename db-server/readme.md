@@ -1,4 +1,4 @@
-chrome extension client
+database server
 
 ```
 brew install node
