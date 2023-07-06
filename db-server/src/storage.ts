@@ -31,7 +31,7 @@ interface StorageInterface<T> {
   genUpdate(oldContent: string, newContent: string, match: StorageMatch<T>): Promise<StorageUpdate<T>>;
   // TODO wrapper with optional location id assert location oldcontent?
   genUpdates(oldContent: string, newContent: string): Promise<Array<Promise<StorageUpdate<T>>>>;
-  upsertContent(update: StorageUpdate<T>): Promise<void>;
+  upsertContent(update: StorageUpdate<T>): Promise<void>; // coupling/cohesion tradeoff for embedding generation responsibility
 };
 
 abstract class BaseStorageMixin<T> implements StorageInterface<T> {
@@ -122,7 +122,7 @@ export class SemanticMatchingExternalStorage extends BaseStorageMixin<number[]> 
   };
   override async genUpdate(oldContent: string, newContent: string, match: StorageMatch<number[]>): Promise<StorageUpdate<number[]>> {
     const newMatchContent = newContent; // TODO llm generate `newMatchContent` based on semantic change (`oldContent`, `newContent`) and old `match.content`
-    const newMatchContentEmbedding = (await openai.createEmbedding({ // cache
+    const newMatchContentEmbedding = (await openai.createEmbedding({ // cache, bulk/batch
       model: 'text-embedding-ada-002',
       input: newMatchContent,
     }))?.data?.data[0]?.embedding; // error handling
@@ -143,7 +143,7 @@ export class SemanticMatchingExternalStorage extends BaseStorageMixin<number[]> 
           },
         ],
       };
-      this.index?.upsert({ upsertRequest });
+      this.index?.upsert({ upsertRequest }); // bulk/batch
     })();
   };
 };
