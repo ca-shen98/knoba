@@ -81,7 +81,18 @@ export class DirectEqualityInMemoryMapStorage extends BaseStorageMixin<string> i
         if (update.oldContentEmbedding) {
           this.embeddedLocationContents.get(update.oldContentEmbedding)?.delete(update.location);
         }
-        this.computeIfAbsent(this.embeddedLocationContents, update.newContentEmbedding, new Map).set(update.location, update.newContent)
+        // computeIfAbsent<K, V>(m: Map<K, V>, k: K, dv: V): V {
+        //   return m.get(k) ?? (m.set(k, dv), dv);
+        // };
+        // computeIfAbsent(this.embeddedLocationContents, update.newContentEmbedding, new Map).set(update.location, update.newContent)
+        const existingEmbedding = this.embeddedLocationContents.get(update.newContentEmbedding);
+        if (existingEmbedding) {
+          existingEmbedding.set(update.location, update.newContent);
+        } else {
+          const newEmbedding = new Map;
+          newEmbedding.set(update.location, update.newContent);
+          this.embeddedLocationContents.set(update.newContentEmbedding, newEmbedding);
+        }
       })()
     );
   };
