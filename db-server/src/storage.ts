@@ -1,7 +1,7 @@
-const assert = require('assert');
+const assert = require('assert'); // require.js
 
 // types/interfaces
-class StorageMatch<T> {
+export class StorageMatch<T> {
   location: string;
   content: string;
   embedding: T;
@@ -15,9 +15,9 @@ export class StorageUpdate<T> {
   location: string;
   newContent: string;
   newContentEmbedding: T;
-  oldContent?: string;
-  oldContentEmbedding?: T;
-  constructor(location: string, newContent: string, newContentEmbedding: T, oldContent?: string, oldContentEmbedding?: T) {
+  oldContent: string;
+  oldContentEmbedding: T;
+  constructor(location: string, newContent: string, newContentEmbedding: T, oldContent: string, oldContentEmbedding: T) {
     this.location = location;
     this.newContent = newContent;
     this.newContentEmbedding = newContentEmbedding;
@@ -26,12 +26,11 @@ export class StorageUpdate<T> {
   };
 };
 
-interface StorageInterface<T> {
-  getMatches(content: string): Promise<Array<Promise<StorageMatch<T>>>>;
-  genUpdate(oldContent: string, newContent: string, match: StorageMatch<T>): Promise<StorageUpdate<T>>;
-  // TODO wrapper with optional location id assert location oldcontent?
-  genUpdates(oldContent: string, newContent: string): Promise<Array<Promise<StorageUpdate<T>>>>;
-  upsertContent(update: StorageUpdate<T>): Promise<void>; // coupling/cohesion tradeoff for embedding generation responsibility
+interface StorageInterface<T> { // coupling/cohesion tradeoff for embedding generation responsibility
+  getMatches(query: StorageMatch<T>): Promise<Array<Promise<StorageMatch<T>>>>;
+  genUpdate(change: StorageUpdate<T>, match: StorageMatch<T>): Promise<StorageUpdate<T>>;
+  genUpdates(change: StorageUpdate<T>): Promise<Array<Promise<StorageUpdate<T>>>>;
+  upsertContent(update: StorageUpdate<T>): Promise<void>;
 };
 
 abstract class BaseStorageMixin<T> implements StorageInterface<T> {
@@ -47,13 +46,10 @@ abstract class BaseStorageMixin<T> implements StorageInterface<T> {
       await new Promise(r => setTimeout(r, this.presleepForTest));
     };
   };
-  protected computeIfAbsent<K, V>(m: Map<K, V>, k: K, dv: V): V {
-    return m.get(k) ?? (m.set(k, dv), dv);
-  };
-  abstract getMatches(content: string): Promise<Array<Promise<StorageMatch<T>>>>;
-  abstract genUpdate(oldContent: string, newContent: string, match: StorageMatch<T>): Promise<StorageUpdate<T>>;
-  async genUpdates(oldContent: string, newContent: string): Promise<Array<Promise<StorageUpdate<T>>>> {
-    return (await this.getMatches(oldContent)).map(getMatch => getMatch.then(match => this.genUpdate(oldContent, newContent, match)));
+  abstract getMatches(query: StorageMatch<T>): Promise<Array<Promise<StorageMatch<T>>>>;
+  abstract genUpdate(change: StorageUpdate<T>, match: StorageMatch<T>): Promise<StorageUpdate<T>>;
+  async genUpdates(change: StorageUpdate<T>): Promise<Array<Promise<StorageUpdate<T>>>> {
+    return (await this.getMatches(new StorageMatch<T>(change.location, change.oldContent, change.oldContentEmbedding))).map(getMatch => getMatch.then(match => this.genUpdate(change, match)));
   };
   abstract upsertContent(update: StorageUpdate<T>): Promise<void>;
 }
@@ -61,15 +57,14 @@ abstract class BaseStorageMixin<T> implements StorageInterface<T> {
 export class DirectEqualityInMemoryMapStorage extends BaseStorageMixin<string> implements StorageInterface<string> { // thread-safety?
   private locationContents = new Map<string, string>;
   private embeddedLocationContents = new Map<string, Map<string, string>>;
-  override async getMatches(content: string): Promise<Array<Promise<StorageMatch<string>>>> {
-    const embedding = content;
-    return [...(await (async () => this.embeddedLocationContents.get(embedding)?.entries())() ?? [])].map(async ([location, content]) => {
-      return new StorageMatch(location, content, embedding);
+  override async getMatches(query: StorageMatch<string>): Promise<Array<Promise<StorageMatch<string>>>> {
+    return [...(await (async () => this.embeddedLocationContents.get(query.embedding)?.entries())() ?? [])].map(async ([location, content]) => {
+      return new StorageMatch(location, content, query.embedding);
     });
   };
-  override async genUpdate(oldContent: string, newContent: string, match: StorageMatch<string>): Promise<StorageUpdate<string>> {
-    assert(match.content == oldContent);
-    const newMatchContent = newContent;
+  override async genUpdate(change: StorageUpdate<string>, match: StorageMatch<string>): Promise<StorageUpdate<string>> {
+    assert(match.content == change.oldContent);
+    const newMatchContent = change.newContent;
     const newMatchContentEmbedding = newMatchContent;
     return new StorageUpdate(match.location, match.content, newMatchContent, match.embedding, newMatchContentEmbedding);
   };
@@ -114,14 +109,14 @@ const configuration = new Configuration({
 const openai = new OpenAIApi(configuration);
 export class SemanticMatchingExternalStorage extends BaseStorageMixin<number[]> implements StorageInterface<number[]> { // thread-safety?
   index: VectorOperationsApi | null = null; // hacky
-  override async getMatches(content: string): Promise<Array<Promise<StorageMatch<number[]>>>> {
+  override async getMatches(query: StorageMatch<number[]>): Promise<Array<Promise<StorageMatch<number[]>>>> {
     const embedding = (await openai.createEmbedding({ // cache
       model: 'text-embedding-ada-002',
-      input: content,
+      input: query.content,
     }))?.data?.data[0]?.embedding; // error handling
     // TODO get close, but not equivalent, matches for embedding from vector db
-    // TODO where to filter if embedding of matches and `content` of interest is not same/semantically equivalent
-    const queryRequest = { // pagination
+    // where to filter if embedding of matches and `content` of interest is same
+    const queryRequest = { // topk, pagination
       vector: embedding,
       topK: 10,
       includeValues: true,
@@ -131,8 +126,10 @@ export class SemanticMatchingExternalStorage extends BaseStorageMixin<number[]> 
     // TODO map results to StorageMatch
     return [];
   };
-  override async genUpdate(oldContent: string, newContent: string, match: StorageMatch<number[]>): Promise<StorageUpdate<number[]>> {
-    const newMatchContent = newContent; // TODO llm generate `newMatchContent` based on semantic change (`oldContent`, `newContent`) and old `match.content`
+  override async genUpdate(change: StorageUpdate<number[]>, match: StorageMatch<number[]>): Promise<StorageUpdate<number[]>> {
+    // TODO llm generate `newMatchContent` based on semantic change (`oldContent`, `newContent`) and old `match.content`
+    // but if equivalent, do direct replacement
+    const newMatchContent = change.newContent;
     const newMatchContentEmbedding = (await openai.createEmbedding({ // cache, bulk/batch
       model: 'text-embedding-ada-002',
       input: newMatchContent,
