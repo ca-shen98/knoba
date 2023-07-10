@@ -1,5 +1,3 @@
-const assert = require('assert'); // require.js
-
 // types/interfaces
 export class StorageMatch<T> {
   location: string;
@@ -63,7 +61,6 @@ export class DirectEqualityInMemoryMapStorage extends BaseStorageMixin<string> i
     });
   };
   override async genUpdate(change: StorageUpdate<string>, match: StorageMatch<string>): Promise<StorageUpdate<string>> {
-    assert(match.content == change.oldContent);
     const newMatchContent = change.newContent;
     const newMatchContentEmbedding = newMatchContent;
     return new StorageUpdate(match.location, match.content, newMatchContent, match.embedding, newMatchContentEmbedding);

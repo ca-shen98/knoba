@@ -1,7 +1,7 @@
 import { StorageMatch, StorageUpdate, DirectEqualityInMemoryMapStorage } from '../src/storage';
 // import { DirectEqualityInMemoryMapStorage } from './src/storage';
 
-const assert = require('assert');
+const assert = require('assert'); // require.js
 
 // addTrackedContent side effect without await is async (should fail)
 // await
