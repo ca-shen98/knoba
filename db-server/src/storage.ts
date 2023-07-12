@@ -1,5 +1,3 @@
-const assert = require('assert'); // require.js
-
 function isTruthy<T>(v: T | undefined): v is T { return !!v }; // syntax style
 
 // types/interfaces
@@ -14,7 +12,7 @@ export class StorageUnit<T> {
   };
 };
 
-interface StorageInterface<T> { // copy by value?
+interface StorageInterface<T> {
   getMatches(query: StorageUnit<T>): Promise<Array<StorageUnit<T>>>;
   genUpdate(
     query: StorageUnit<T>,
@@ -27,7 +25,18 @@ interface StorageInterface<T> { // copy by value?
 };
 
 abstract class BaseStorageMixin<T> implements StorageInterface<T> {
-
+  abstract getMatches(query: StorageUnit<T>): Promise<Array<StorageUnit<T>>>;
+  abstract genUpdate(
+    query: StorageUnit<T>,
+    diff: StorageUnit<T>,
+    match: StorageUnit<T>
+  ): Promise<StorageUnit<T>>;
+  async genUpdates(query: StorageUnit<T>, diff: StorageUnit<T>)
+    : Promise<Array<Promise<StorageUnit<T>>>> { // inner promise
+    return (await this.getMatches(query)).map(match => this.genUpdate(query, diff, match));
+  };
+  abstract upsertContent(query: StorageUnit<T>): Promise<void>;
+  
   private _presleepForTest: number = 0; // hacky
   get presleepForTest(): number {
     return this._presleepForTest;
@@ -40,18 +49,6 @@ abstract class BaseStorageMixin<T> implements StorageInterface<T> {
       await new Promise(r => setTimeout(r, this.presleepForTest));
     };
   };
-
-  abstract getMatches(query: StorageUnit<T>): Promise<Array<StorageUnit<T>>>;
-  abstract genUpdate(
-    query: StorageUnit<T>,
-    diff: StorageUnit<T>,
-    match: StorageUnit<T>
-  ): Promise<StorageUnit<T>>;
-  async genUpdates(query: StorageUnit<T>, diff: StorageUnit<T>)
-    : Promise<Array<Promise<StorageUnit<T>>>> { // inner promise
-    return (await this.getMatches(query)).map(match => this.genUpdate(query, diff, match));
-  };
-  abstract upsertContent(query: StorageUnit<T>): Promise<void>;
 };
 
 export class DirectEqualityInMemoryMapStorage
@@ -65,7 +62,7 @@ export class DirectEqualityInMemoryMapStorage
     return [...(await (async () =>
       this.embeddedLocationContents.get(query.embedding)?.entries()
     )() ?? [])]
-      .map(([_location, match]) => match);
+      .map(([_location, match]) => match); // copy by value?
   };
 
   override async genUpdate(
@@ -81,7 +78,7 @@ export class DirectEqualityInMemoryMapStorage
   override async upsertContent(query: StorageUnit<string>): Promise<void> {
     await this.awaitablePresleepForTest();
     const oldContentEmbedding = this.locationContents.get(query.location)?.embedding;
-    (
+    await Promise.all([ // strong/weak error handling
       (async () => this.locationContents.set(query.location, query))(),
       (async () => {
         if (oldContentEmbedding) { // need delete before set to prevent set then delete of same
@@ -100,7 +97,7 @@ export class DirectEqualityInMemoryMapStorage
           this.embeddedLocationContents.set(query.embedding, newEmbedding);
         }
       })()
-    );
+    ]);
   };
 };
 
@@ -167,21 +164,19 @@ export class SemanticMatchingExternalStorage
 
   override async upsertContent(query: StorageUnit<number[]>): Promise<void> {
     await this.awaitablePresleepForTest();
-    (
-        this.index?.upsert({
-        upsertRequest: {
-          vectors: [
-            {
-              id: query.location,
-              values: query.embedding,
-              metadata: {
-                location: query.location,
-                content: query.content,
-              },
+    await this.index?.upsert({ // bulk/batch
+      upsertRequest: {
+        vectors: [
+          {
+            id: query.location,
+            values: query.embedding,
+            metadata: {
+              location: query.location,
+              content: query.content,
             },
-          ],
-        },
-      }) // bulk/batch
-    );
+          },
+        ],
+      },
+    });
   };
 };
