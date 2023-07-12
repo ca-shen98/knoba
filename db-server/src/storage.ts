@@ -1,6 +1,10 @@
+const assert = require('assert'); // require.js
+
+function isTruthy<T>(v: T | undefined): v is T { return !!v }; // syntax style
+
 // types/interfaces
-export class StorageMatch<T> {
-  location: string;
+export class StorageUnit<T> {
+  location: string; // location is unique id
   content: string;
   embedding: T;
   constructor(location: string, content: string, embedding: T) {
@@ -9,29 +13,21 @@ export class StorageMatch<T> {
     this.embedding = embedding;
   };
 };
-export class StorageUpdate<T> {
-  location: string;
-  newContent: string;
-  newContentEmbedding: T;
-  oldContent: string;
-  oldContentEmbedding: T;
-  constructor(location: string, newContent: string, newContentEmbedding: T, oldContent: string, oldContentEmbedding: T) {
-    this.location = location;
-    this.newContent = newContent;
-    this.newContentEmbedding = newContentEmbedding;
-    this.oldContent = oldContent;
-    this.oldContentEmbedding = oldContentEmbedding;
-  };
-};
 
-interface StorageInterface<T> { // coupling/cohesion tradeoff for embedding generation responsibility
-  getMatches(query: StorageMatch<T>): Promise<Array<Promise<StorageMatch<T>>>>;
-  genUpdate(change: StorageUpdate<T>, match: StorageMatch<T>): Promise<StorageUpdate<T>>;
-  genUpdates(change: StorageUpdate<T>): Promise<Array<Promise<StorageUpdate<T>>>>;
-  upsertContent(update: StorageUpdate<T>): Promise<void>;
+interface StorageInterface<T> { // copy by value?
+  getMatches(query: StorageUnit<T>): Promise<Array<StorageUnit<T>>>;
+  genUpdate(
+    query: StorageUnit<T>,
+    diff: StorageUnit<T>,
+    match: StorageUnit<T>
+  ): Promise<StorageUnit<T>>;
+  genUpdates(query: StorageUnit<T>, diff: StorageUnit<T>)
+    : Promise<Array<Promise<StorageUnit<T>>>>;
+  upsertContent(query: StorageUnit<T>): Promise<void>;
 };
 
 abstract class BaseStorageMixin<T> implements StorageInterface<T> {
+
   private _presleepForTest: number = 0; // hacky
   get presleepForTest(): number {
     return this._presleepForTest;
@@ -44,53 +40,73 @@ abstract class BaseStorageMixin<T> implements StorageInterface<T> {
       await new Promise(r => setTimeout(r, this.presleepForTest));
     };
   };
-  abstract getMatches(query: StorageMatch<T>): Promise<Array<Promise<StorageMatch<T>>>>;
-  abstract genUpdate(change: StorageUpdate<T>, match: StorageMatch<T>): Promise<StorageUpdate<T>>;
-  async genUpdates(change: StorageUpdate<T>): Promise<Array<Promise<StorageUpdate<T>>>> {
-    return (await this.getMatches(new StorageMatch<T>(change.location, change.oldContent, change.oldContentEmbedding))).map(getMatch => getMatch.then(match => this.genUpdate(change, match)));
-  };
-  abstract upsertContent(update: StorageUpdate<T>): Promise<void>;
-}
 
-export class DirectEqualityInMemoryMapStorage extends BaseStorageMixin<string> implements StorageInterface<string> { // thread-safety?
-  private locationContents = new Map<string, string>;
-  private embeddedLocationContents = new Map<string, Map<string, string>>;
-  override async getMatches(query: StorageMatch<string>): Promise<Array<Promise<StorageMatch<string>>>> {
-    return [...(await (async () => this.embeddedLocationContents.get(query.embedding)?.entries())() ?? [])].map(async ([location, content]) => {
-      return new StorageMatch(location, content, query.embedding);
-    });
+  abstract getMatches(query: StorageUnit<T>): Promise<Array<StorageUnit<T>>>;
+  abstract genUpdate(
+    query: StorageUnit<T>,
+    diff: StorageUnit<T>,
+    match: StorageUnit<T>
+  ): Promise<StorageUnit<T>>;
+  async genUpdates(query: StorageUnit<T>, diff: StorageUnit<T>)
+    : Promise<Array<Promise<StorageUnit<T>>>> { // inner promise
+    return (await this.getMatches(query)).map(match => this.genUpdate(query, diff, match));
   };
-  override async genUpdate(change: StorageUpdate<string>, match: StorageMatch<string>): Promise<StorageUpdate<string>> {
-    const newMatchContent = change.newContent;
+  abstract upsertContent(query: StorageUnit<T>): Promise<void>;
+};
+
+export class DirectEqualityInMemoryMapStorage
+  extends BaseStorageMixin<string>
+  implements StorageInterface<string> { // thread-safety?
+
+  private locationContents = new Map<string, StorageUnit<string>>;
+  private embeddedLocationContents = new Map<string, Map<string, StorageUnit<string>>>;
+
+  override async getMatches(query: StorageUnit<string>): Promise<Array<StorageUnit<string>>> {
+    return [...(await (async () =>
+      this.embeddedLocationContents.get(query.embedding)?.entries()
+    )() ?? [])]
+      .map(([_location, match]) => match);
+  };
+
+  override async genUpdate(
+    query: StorageUnit<string>,
+    _diff: StorageUnit<string>,
+    match: StorageUnit<string>
+  ): Promise<StorageUnit<string>> {
+    const newMatchContent = query.content;
     const newMatchContentEmbedding = newMatchContent;
-    return new StorageUpdate(match.location, match.content, newMatchContent, match.embedding, newMatchContentEmbedding);
+    return new StorageUnit(match.location, newMatchContent, newMatchContentEmbedding);
   };
-  override async upsertContent(update: StorageUpdate<string>): Promise<void> {
+
+  override async upsertContent(query: StorageUnit<string>): Promise<void> {
     await this.awaitablePresleepForTest();
+    const oldContentEmbedding = this.locationContents.get(query.location)?.embedding;
     (
-      (async () => this.locationContents.set(update.location, update.newContent))(),
+      (async () => this.locationContents.set(query.location, query))(),
       (async () => {
-        if (update.oldContentEmbedding) {
-          this.embeddedLocationContents.get(update.oldContentEmbedding)?.delete(update.location);
+        if (oldContentEmbedding) { // need delete before set to prevent set then delete of same
+          this.embeddedLocationContents.get(oldContentEmbedding)?.delete(query.location);
         }
         // computeIfAbsent<K, V>(m: Map<K, V>, k: K, dv: V): V {
         //   return m.get(k) ?? (m.set(k, dv), dv);
         // };
-        // computeIfAbsent(this.embeddedLocationContents, update.newContentEmbedding, new Map).set(update.location, update.newContent)
-        const existingEmbedding = this.embeddedLocationContents.get(update.newContentEmbedding);
+        // computeIfAbsent(this.embeddedLocationContents, query.embedding, new Map).set(query.location, query)
+        const existingEmbedding = this.embeddedLocationContents.get(query.embedding);
         if (existingEmbedding) {
-          existingEmbedding.set(update.location, update.newContent);
+          existingEmbedding.set(query.location, query);
         } else {
           const newEmbedding = new Map;
-          newEmbedding.set(update.location, update.newContent);
-          this.embeddedLocationContents.set(update.newContentEmbedding, newEmbedding);
+          newEmbedding.set(query.location, query);
+          this.embeddedLocationContents.set(query.embedding, newEmbedding);
         }
       })()
     );
   };
 };
 
-import { VectorOperationsApi } from '@pinecone-database/pinecone/dist/pinecone-generated-ts-fetch'; // integrate
+import {
+  VectorOperationsApi
+} from '@pinecone-database/pinecone/dist/pinecone-generated-ts-fetch'; // integrate
 // import { PineconeClient } from '@pinecone-database/pinecone';
 // const pinecone = new PineconeClient();
 // const pineconeInit = {
@@ -104,51 +120,68 @@ const configuration = new Configuration({
   apiKey: '<openai key>',
 });
 const openai = new OpenAIApi(configuration);
-export class SemanticMatchingExternalStorage extends BaseStorageMixin<number[]> implements StorageInterface<number[]> { // thread-safety?
+
+export class SemanticMatchingExternalStorage
+  extends BaseStorageMixin<number[]>
+  implements StorageInterface<number[]> { // thread-safety?
+
   index: VectorOperationsApi | null = null; // hacky
-  override async getMatches(query: StorageMatch<number[]>): Promise<Array<Promise<StorageMatch<number[]>>>> {
-    const embedding = (await openai.createEmbedding({ // cache
-      model: 'text-embedding-ada-002',
-      input: query.content,
-    }))?.data?.data[0]?.embedding; // error handling
-    // TODO get close, but not equivalent, matches for embedding from vector db
-    // where to filter if embedding of matches and `content` of interest is same
-    const queryRequest = { // topk, pagination
-      vector: embedding,
-      topK: 10,
-      includeValues: true,
-      includeMetadata: true,
-    };
-    const queryResponse = await this.index?.query({ queryRequest });
-    // TODO map results to StorageMatch
-    return [];
+  
+  override async getMatches(query: StorageUnit<number[]>): Promise<Array<StorageUnit<number[]>>> {
+    return [...((await this.index?.query({
+      queryRequest: { // topk, pagination
+        vector: query.embedding, // coupling/cohesion embedding responsibility
+        topK: 10,
+        includeValues: true,
+        includeMetadata: true,
+      },
+    }))?.matches ?? [])]
+      // TODO get close, but not equivalent, matches for embedding from vector db
+      // where to filter if embedding of matches and `content` of interest is same
+      .map(match =>
+        match.metadata &&
+        match.values &&
+        new StorageUnit<number[]>(
+          match.metadata['location'],
+          match.metadata['content'],
+          match.values
+        )
+      )
+      .filter(isTruthy);
   };
-  override async genUpdate(change: StorageUpdate<number[]>, match: StorageMatch<number[]>): Promise<StorageUpdate<number[]>> {
-    // TODO llm generate `newMatchContent` based on semantic change (`oldContent`, `newContent`) and old `match.content`
+
+  override async genUpdate(
+    query: StorageUnit<number[]>,
+    _diff: StorageUnit<number[]>,
+    match: StorageUnit<number[]>
+  ): Promise<StorageUnit<number[]>> {
+    // TODO llm generate `newMatchContent` based on semantic change (diff, query)
     // but if equivalent, do direct replacement
-    const newMatchContent = change.newContent;
+    const newMatchContent = query.content;
     const newMatchContentEmbedding = (await openai.createEmbedding({ // cache, bulk/batch
       model: 'text-embedding-ada-002',
       input: newMatchContent,
     }))?.data?.data[0]?.embedding; // error handling
-    return new StorageUpdate(match.location, newMatchContent, newMatchContentEmbedding, match.content, match.embedding);
+    return new StorageUnit(match.location, newMatchContent, newMatchContentEmbedding);
   };
-  override async upsertContent(update: StorageUpdate<number[]>): Promise<void> {
+
+  override async upsertContent(query: StorageUnit<number[]>): Promise<void> {
     await this.awaitablePresleepForTest();
-    (async () => {
-      const upsertRequest = {
-        vectors: [
-          {
-            id: update.location, // id
-            values: update.newContentEmbedding,
-            metadata: {
-              location: update.location,
-              content: update.newContent,
+    (
+        this.index?.upsert({
+        upsertRequest: {
+          vectors: [
+            {
+              id: query.location,
+              values: query.embedding,
+              metadata: {
+                location: query.location,
+                content: query.content,
+              },
             },
-          },
-        ],
-      };
-      this.index?.upsert({ upsertRequest }); // bulk/batch
-    })();
+          ],
+        },
+      }) // bulk/batch
+    );
   };
 };
