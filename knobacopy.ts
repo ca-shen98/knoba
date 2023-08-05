@@ -1,6 +1,6 @@
-    export async function deleteIfExists(externalType: string, rawExternalId: string, $): Promise<void> {
+    async function deleteIfExists(externalType, rawExternalId, $) {
       const vectorId = `${externalType}_${rawExternalId}`;
-      const knobaIds: string[] | undefined = await $.myDatastore.get(vectorId);
+      const knobaIds = await $.myDatastore.get(vectorId);
       if (!knobaIds) {
         return;
       }
@@ -48,8 +48,7 @@
         }
       }));
     };
-    type ContentEmbedding = { content: string, embedding: number[] };
-    async function getContentEmbeddings(externalType: string, rawExternalId: string, $): Promise<Array<ContentEmbedding>> {
+    async function getContentEmbeddings(externalType, rawExternalId, $) {
       switch (externalType) {
         case "notion":
           const notionGetResp = await axios($, {
@@ -60,8 +59,8 @@
             },
           });
           console.log(notionGetResp);
-          const content: string = notionGetResp.paragraph.rich_text[0].plain_text.trim();
-          const embedding: number[] = (await axios($, {
+          const content = notionGetResp.paragraph.rich_text[0].plain_text.trim();
+          const embedding = (await axios($, {
             method: "POST",
             url: `https://api.openai.com/v1/embeddings`,
             headers: {
@@ -90,8 +89,8 @@
                 .filter((content) => content && content.trim())
                 .join('').trim())
             .filter((content) => content && content.trim())
-            .map(async (content: string) => {
-              const embedding: number[] = (await axios($, {
+            .map(async (content) => {
+              const embedding = (await axios($, {
                 method: "POST",
                 url: `https://api.openai.com/v1/embeddings`,
                 headers: {
@@ -108,7 +107,7 @@
             return [];
       }
     };
-    async function upsertContent(vectorId: string, knobaIds: string[], contentEmbeddings: ContentEmbedding[], $): Promise<void> {
+    async function upsertContent(vectorId, knobaIds, contentEmbeddings, $) {
       const fetchedContent = (await axios($, {
         method: "GET",
         url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
@@ -188,7 +187,7 @@
         ))),
       ]);
     };
-    async function knobaIngest(vectorId: string, contentEmbeddings: ContentEmbedding[], $): Promise<void> {
+    async function knobaIngest(vectorId, contentEmbeddings, $) {
       const toUpsertContent = await Promise.all(contentEmbeddings.map(async ({ content, embedding }) => {
         const matches = await axios($, {
           method: "POST",
@@ -230,9 +229,9 @@
         },
       });
     };
-    export async function handleUpsert(externalType: string, rawExternalId: string, $): Promise<void> {
+    async function handleUpsert(externalType, rawExternalId, $) {
       const vectorId = `${externalType}_${rawExternalId}`;
-      const knobaIds: string[] | undefined = await $.myDatastore.get(vectorId);
+      const knobaIds = await $.myDatastore.get(vectorId);
       const contentEmbeddings = await getContentEmbeddings(externalType, rawExternalId, $);
       if (knobaIds) {
         await upsertContent(vectorId, knobaIds, contentEmbeddings, $);
@@ -240,3 +239,4 @@
         await knobaIngest(vectorId, contentEmbeddings, $);
       }
     };
+    
