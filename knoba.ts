@@ -128,6 +128,9 @@
             "Api-Key": `${$.pinecone.$auth.api_key}`,
           },
           data: {
+            // what if instead of changing content of knoba id,
+            // should change doc to point to different existing knoba id
+            // would you change all references of old knoba id to be new knoba id as well?
             vectors: knobaIds.map((knobaId, index) => ({
               id: knobaId,
               values: contentEmbeddings[index].embedding,
