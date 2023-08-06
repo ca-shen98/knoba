@@ -210,8 +210,8 @@
         },
         { isContentUpsert: [], notContentUpsert: { withDelete: [], withDUpsert: [] } }
       );
-      await Promise.all([
-        axios($, {
+      if (gUDKnobaIdContents.notContentUpsert.withDelete.length > 0) {
+        await axios($, {
           method: "POST",
           url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/delete`,
           headers: {
@@ -220,7 +220,9 @@
           data: {
             ids: gUDKnobaIdContents.notContentUpsert.withDelete.map(({ dKnobaIdContent: { knobaId } }) => knobaId),
           },
-        }),
+        });
+      }
+      await Promise.all([
         axios($, {
           method: "POST",
           url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/upsert`,
