@@ -239,6 +239,7 @@
                 metadata: {
                   content: uKnobaIdContent.content,
                   external_ids: JSON.stringify(Array.from(uKnobaIdContent.externalIds)),
+                },
               })),
           },
         }),
