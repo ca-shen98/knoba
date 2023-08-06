@@ -1,21 +1,21 @@
-    export async function deleteIfExists(externalType: string, rawExternalId: string, $): Promise<void> {
-      const vectorId = `${externalType}_${rawExternalId}`;
-      const knobaIds: string[] | undefined = await $.myDatastore.get(vectorId);
-      if (!knobaIds) {
+    export async function deleteIfExists(externalTypeQ: string, rawExternalId: string, $): Promise<void> {
+      const qExternalId = `${externalTypeQ}_${rawExternalId}`;
+      const mKnobaIds: string[] | undefined = await $.myDatastore.get(qExternalId);
+      if (!mKnobaIds) {
         return;
       }
-      await $.myDatastore.delete(vectorId);
-      await Promise.all(knobaIds?.map(async (knobaId) => {
-        const fetch = (await axios($, {
+      await $.myDatastore.delete(qExternalId);
+      await Promise.all(mKnobaIds?.map(async (knobaId) => {
+        const fetchResp = await axios($, {
           method: "GET",
           url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch?ids=${knobaId}`,
           headers: {
             "Api-Key": `${$.pinecone.$auth.api_key}`,
           },
-        })).vectors[knobaId];
-        console.log(fetch);
-        const externalIds = JSON.parse(fetch.metadata.external_ids)
-          .filter((externalId) => externalId != vectorId);
+        });
+        console.log(fetchResp);
+        const externalIds = JSON.parse(fetchResp.vectors[knobaId].metadata.external_ids)
+          .filter((externalId) => externalId != qExternalId);
         if (externalIds.length > 0) {
           await axios($, {
             method: "POST",
@@ -26,10 +26,10 @@
             data: {
               vectors: [{
                 id: knobaId,
-                values: fetch.values,
+                values: fetchResp.vectors[knobaId].values,
                 metadata: {
                   external_ids: externalIds,
-                  content: fetch.metadata.content,
+                  content: fetchResp.vectors[knobaId].metadata.content,
                 },
               }],
             },
@@ -49,8 +49,8 @@
       }));
     };
     type ContentEmbedding = { content: string, embedding: number[] };
-    async function getContentEmbeddings(externalType: string, rawExternalId: string, $): Promise<Array<ContentEmbedding>> {
-      switch (externalType) {
+    async function getContentEmbeddings(externalTypeQ: string, rawExternalId: string, $): Promise<Array<ContentEmbedding>> {
+      switch (externalTypeQ) {
         case "notion":
           const notionGetResp = await axios($, {
             url: `https://api.notion.com/v1/blocks/${rawExternalId}`,
@@ -108,7 +108,45 @@
             return [];
       }
     };
-    async function upsertContent(vectorId: string, knobaIds: string[], contentEmbeddings: ContentEmbedding[], $): Promise<void> {
+    type KnobaMatch = {
+      knobaId: string,
+      score: number,
+      embedding: number[],
+      content: string,
+      externalIds: Set<string>,
+    };
+    type IngestedContentDataItem = { content: string, embedding: number[], maybeKnobaMatch: KnobaMatch | undefined };
+    async function getIngestedContentData(externalTypeQ: string, rawExternalId: string, $): Promise<Array<IngestedContentDataItem>> {
+      return await Promise.all((await getContentEmbeddings(externalTypeQ, rawExternalId, $)).map(async ({ content, embedding }) => {
+        const matchResp = await axios($, {
+          method: "POST",
+          url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/query`,
+          headers: {
+            "Api-Key": `${$.pinecone.$auth.api_key}`,
+          },
+          data: {
+            topK: 1,
+            vector: embedding,
+            includeValues: false,
+            includeMetadata: true,
+          },
+        });
+        console.log(matchResp);
+        const wrMaybeMatch = matchResp.matches.filter((match) => Math.abs(match.score - 1) < 0.05)
+          .map(({ id, values, metadata }) => ({
+            knobaId: id,
+            embedding: values,
+            content: metadata.content,
+            externalIds: new Set(JSON.parse(metadata.external_ids)),
+          }));
+        return {
+          content,
+          embedding,
+          knobaMatch: wrMaybeMatch.length > 0 ? wrMaybeMatch[0] : undefined,
+        };
+      }));
+    };
+    async function upsertContent(vectorId: string, knobaIds: string[], inContentData: IngestedContentDataItem[], $): Promise<void> {
       const fetchedContent = (await axios($, {
         method: "GET",
         url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
@@ -120,6 +158,9 @@
         },
       })).vectors;
       console.log(fetchedContent);
+      // what if instead of changing content of knoba id,
+      // should change doc to point to different existing knoba id
+      // would you change all references of old knoba id to be new knoba id as well?
       await Promise.all([
         axios($, {
           method: "POST",
@@ -128,14 +169,11 @@
             "Api-Key": `${$.pinecone.$auth.api_key}`,
           },
           data: {
-            // what if instead of changing content of knoba id,
-            // should change doc to point to different existing knoba id
-            // would you change all references of old knoba id to be new knoba id as well?
             vectors: knobaIds.map((knobaId, index) => ({
               id: knobaId,
-              values: contentEmbeddings[index].embedding,
+              values: inContentData[index].embedding,
               metadata: {
-                content: contentEmbeddings[index].content,
+                content: inContentData[index].content,
                 external_ids: fetchedContent[knobaId].metadata.external_ids,
               }
             })),
@@ -158,7 +196,7 @@
                       rich_text: [
                         {
                           text: {
-                            content: contentEmbeddings[index].content,
+                            content: inContentData[index].content,
                           },
                         },
                       ],
@@ -180,7 +218,7 @@
                             text: fetchedContent[knobaId].metadata.content,
                             matchCase: true,
                           },
-                          replaceText: contentEmbeddings[index].content,
+                          replaceText: inContentData[index].content,
                         },
                       },
                     ],
@@ -191,27 +229,11 @@
         ))),
       ]);
     };
-    async function knobaIngest(vectorId: string, contentEmbeddings: ContentEmbedding[], $): Promise<void> {
-      const toUpsertContent = await Promise.all(contentEmbeddings.map(async ({ content, embedding }) => {
-        const matches = await axios($, {
-          method: "POST",
-          url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/query`,
-          headers: {
-            "Api-Key": `${$.pinecone.$auth.api_key}`,
-          },
-          data: {
-            topK: 1,
-            vector: embedding,
-            includeValues: false,
-            includeMetadata: true,
-          },
-        });
-        console.log(matches);
-        const [knobaId, externalIds] = matches.matches.filter((match) => Math.abs(match.score - 1) < 0.05)
-          .reduce(
-            (prev, curr) => [curr.id, JSON.stringify(Array.from(new Set(JSON.parse(curr.metadata.external_ids)).add(vectorId)))],
-            [uuidv4(), JSON.stringify([vectorId])]
-          );
+    async function knobaIngest(vectorId: string, inContentData: IngestedContentDataItem[], $): Promise<void> {
+      const toUpsertContent = await Promise.all(inContentData.map(async ({ content, embedding, maybeKnobaMatch }) => {
+        const [knobaId, externalIds] = maybeKnobaMatch
+          ? [maybeKnobaMatch.knobaId, maybeKnobaMatch.externalIds.add(vectorId)]
+          : [uuidv4(), new Set([vectorId])];
         return { knobaId, embedding, content, externalIds };
       }));
       await $.myDatastore.set(vectorId, JSON.stringify(toUpsertContent.map(({ knobaId }) => knobaId)));
@@ -226,20 +248,20 @@
             id: knobaId,
             values: embedding,
             metadata: {
-              external_ids: externalIds,
+              external_ids: JSON.stringify(Array.from(externalIds)),
               content: content,
             },
           })),
         },
       });
     };
-    export async function handleUpsert(externalType: string, rawExternalId: string, $): Promise<void> {
-      const vectorId = `${externalType}_${rawExternalId}`;
-      const knobaIds: string[] | undefined = await $.myDatastore.get(vectorId);
-      const contentEmbeddings = await getContentEmbeddings(externalType, rawExternalId, $);
-      if (knobaIds) {
-        await upsertContent(vectorId, knobaIds, contentEmbeddings, $);
+    export async function handleUpsert(externalTypeQ: string, rawExternalId: string, $): Promise<void> {
+      const qExternalId = `${externalTypeQ}_${rawExternalId}`;
+      const mKnobaIds: string[] | undefined = await $.myDatastore.get(qExternalId);
+      const inContentData = await getIngestedContentData(externalTypeQ, rawExternalId, $);
+      if (mKnobaIds) {
+        await upsertContent(qExternalId, mKnobaIds, inContentData, $);
       } else {
-        await knobaIngest(vectorId, contentEmbeddings, $);
+        await knobaIngest(qExternalId, inContentData, $);
       }
     };
