@@ -161,7 +161,7 @@
       const udKnobaIdContents = mKnobaIds.map((mKnobaId, index) => {
         const maybeKnobaMatch = inContentData[index].maybeKnobaMatch;
         if (maybeKnobaMatch && Math.abs(maybeKnobaMatch.score - 1) < 0.05) {
-          const dKnobaIdExternalIds = new Set(JSON.parse(fetchedContent[index].metadata.external_ids));
+          const dKnobaIdExternalIds = new Set(JSON.parse(fetchedContent[mKnobaId].metadata.external_ids));
           dKnobaIdExternalIds.delete(qExternalId);
           return {
             isContentUpsert: false,
@@ -172,9 +172,9 @@
               externalIds: maybeKnobaMatch.externalIds.add(qExternalId),
             },
             dKnobaIdContent: {
-              knobaId: fetchedContent[index].id,
-              embedding: fetchedContent[index].values,
-              content: fetchedContent[index].metadata.content,
+              knobaId: fetchedContent[mKnobaId].id,
+              embedding: fetchedContent[mKnobaId].values,
+              content: fetchedContent[mKnobaId].metadata.content,
               externalIds: dKnobaIdExternalIds,
             },
           };
@@ -182,16 +182,16 @@
           return {
             isContentUpsert: true,
             uKnobaIdContent: {
-              knobaId: fetchedContent[index].id,
+              knobaId: fetchedContent[mKnobaId].id,
               embedding: inContentData[index].embedding,
               content: inContentData[index].content,
-              externalIds: fetchedContent[index].metadata.externalIds,
+              externalIds: fetchedContent[mKnobaId].metadata.externalIds,
             },
             dKnobaIdContent: {
-              knobaId: fetchedContent[index].id,
-              embedding: fetchedContent[index].values,
-              content: fetchedContent[index].metadata.content,
-              externalIds: fetchedContent[index].metadata.externalIds,
+              knobaId: fetchedContent[mKnobaId].id,
+              embedding: fetchedContent[mKnobaId].values,
+              content: fetchedContent[mKnobaId].metadata.content,
+              externalIds: fetchedContent[mKnobaId].metadata.externalIds,
             },
           };
         }
