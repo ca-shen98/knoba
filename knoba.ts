@@ -146,7 +146,7 @@
         };
       }));
     };
-    async function upsertContent(vectorId: string, knobaIds: string[], inContentData: IngestedContentDataItem[], $): Promise<void> {
+    async function upsertContent(vectorId: string, mKnobaIds: string[], inContentData: IngestedContentDataItem[], $): Promise<void> {
       const fetchedContent = (await axios($, {
         method: "GET",
         url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
@@ -154,13 +154,16 @@
           "Api-Key": `${$.pinecone.$auth.api_key}`,
         },
         data: {
-          ids: knobaIds,
+          ids: mKnobaIds,
         },
       })).vectors;
       console.log(fetchedContent);
-      // what if instead of changing content of knoba id,
-      // should change doc to point to different existing knoba id
-      // would you change all references of old knoba id to be new knoba id as well?
+      // TODO foreach mKnobaId/paragraphs, do one of following:
+      //  * upsert mKnobaId with new paragraph content/embedding -> want to batch so need a map and filter
+      //    * and foreach externalId of mKnobaId, replace content
+      // OR
+      //  * change knobaId in datastore to new knobaId -> need new list of knobaIds at end to call datastore api with
+      //    * and check if old mKnobaId has no more refs to it for deletion
       await Promise.all([
         axios($, {
           method: "POST",
@@ -169,7 +172,7 @@
             "Api-Key": `${$.pinecone.$auth.api_key}`,
           },
           data: {
-            vectors: knobaIds.map((knobaId, index) => ({
+            vectors: mKnobaIds.map((knobaId, index) => ({
               id: knobaId,
               values: inContentData[index].embedding,
               metadata: {
@@ -179,7 +182,7 @@
             })),
           },
         }),
-        Promise.all(knobaIds.map(async (knobaId, index) => await Promise.all(
+        Promise.all(mKnobaIds.map(async (knobaId, index) => await Promise.all(
           JSON.parse(fetchedContent[knobaId].metadata.external_ids)
             .filter((externalId) => externalId != vectorId)
             .map(async (externalId) => {
