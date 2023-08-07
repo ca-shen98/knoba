@@ -160,9 +160,9 @@
       console.log(fetchedContent);
       const udKnobaIdContents = mKnobaIds.map((mKnobaId, index) => {
         const maybeKnobaMatch = inContentData[index].maybeKnobaMatch;
+        const fetchedExternalIds = new Set(JSON.parse(fetchedContent[mKnobaId].metadata.external_ids));
         if (maybeKnobaMatch && Math.abs(maybeKnobaMatch.score - 1) < 0.05) {
-          const dKnobaIdExternalIds = new Set(JSON.parse(fetchedContent[mKnobaId].metadata.external_ids));
-          dKnobaIdExternalIds.delete(qExternalId);
+          fetchedExternalIds.delete(qExternalId);
           return {
             isContentUpsert: false,
             uKnobaIdContent: {
@@ -175,7 +175,7 @@
               knobaId: fetchedContent[mKnobaId].id,
               embedding: fetchedContent[mKnobaId].values,
               content: fetchedContent[mKnobaId].metadata.content,
-              externalIds: dKnobaIdExternalIds,
+              externalIds: fetchedExternalIds,
             },
           };
         } else {
@@ -185,13 +185,13 @@
               knobaId: fetchedContent[mKnobaId].id,
               embedding: inContentData[index].embedding,
               content: inContentData[index].content,
-              externalIds: fetchedContent[mKnobaId].metadata.externalIds,
+              externalIds: fetchedExternalIds,
             },
             dKnobaIdContent: {
               knobaId: fetchedContent[mKnobaId].id,
               embedding: fetchedContent[mKnobaId].values,
               content: fetchedContent[mKnobaId].metadata.content,
-              externalIds: fetchedContent[mKnobaId].metadata.externalIds,
+              externalIds: fetchedExternalIds,
             },
           };
         }
@@ -246,7 +246,7 @@
           },
         }),
         Promise.all(gUDKnobaIdContents.isContentUpsert.map(async ({ uKnobaIdContent, dKnobaIdContent }) => await Promise.all(
-          uKnobaIdContent.externalIds
+          Array.from(uKnobaIdContent.externalIds)
             .filter((externalId) => externalId != qExternalId)
             .map(async (externalId) => {
               if (externalId.startsWith("notion_")) {
