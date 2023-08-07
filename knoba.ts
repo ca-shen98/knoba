@@ -28,8 +28,8 @@
                 id: knobaId,
                 values: fetchResp.vectors[knobaId].values,
                 metadata: {
-                  external_ids: externalIds,
                   content: fetchResp.vectors[knobaId].metadata.content,
+                  external_ids: externalIds,
                 },
               }],
             },
@@ -240,7 +240,7 @@
                 values: uKnobaIdContent.embedding,
                 metadata: {
                   content: uKnobaIdContent.content,
-                  external_ids: JSON.stringify(Array.from(uKnobaIdContent.externalIds)),
+                  external_ids: Array.from(uKnobaIdContent.externalIds),
                 },
               })),
           },
@@ -315,7 +315,7 @@
             values: embedding,
             metadata: {
               content: content,
-              external_ids: JSON.stringify(Array.from(externalIds)),
+              external_ids: Array.from(externalIds),
             },
           })),
         },
