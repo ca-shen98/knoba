@@ -1,8 +1,8 @@
 import { v4 as uuidv4 } from 'uuid'
 import { axios } from "@pipedream/platform"
 var process;
-    
-    export async function deleteIfExists(externalTypeQ: string, rawExternalId: string, $): Promise<void> {
+
+    async function deleteIfExists(externalTypeQ, rawExternalId, $) {
       const qExternalId = `${externalTypeQ}_${rawExternalId}`;
       const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
       if (!mKnobaIdsStr) {
@@ -53,8 +53,7 @@ var process;
         }
       }));
     };
-    type ContentEmbedding = { embedding: number[], content: string };
-    async function getContentEmbeddings(externalTypeQ: string, rawExternalId: string, $): Promise<Array<ContentEmbedding>> {
+    async function getContentEmbeddings(externalTypeQ, rawExternalId, $) {
       switch (externalTypeQ) {
         case "notion":
           const notionGetResp = await axios($, {
@@ -112,15 +111,7 @@ var process;
             return [];
       }
     };
-    type KnobaIdContent = {
-      knobaId: string,
-      embedding: number[],
-      content: string,
-      externalIds: Set<string>,
-    };
-    type KnobaMatch = { score: number, match: KnobaIdContent };
-    type IngestedContentDataItem = { content: string, embedding: number[], maybeKnobaMatch: KnobaMatch | undefined };
-    async function getIngestedContentData(externalTypeQ: string, rawExternalId: string, $): Promise<Array<IngestedContentDataItem>> {
+    async function getIngestedContentData(externalTypeQ, rawExternalId, $) {
       const contentEmbeddings = await getContentEmbeddings(externalTypeQ, rawExternalId, $);
       return await Promise.all(contentEmbeddings.map(async ({ embedding, content }) => {
         const matchResp = await axios($, {
@@ -154,7 +145,7 @@ var process;
         };
       }));
     };
-    async function upsertContent(qExternalId: string, mKnobaIds: string[], inContentData: IngestedContentDataItem[], $): Promise<void> {
+    async function upsertContent(qExternalId, mKnobaIds, inContentData, $) {
       const fetchedContent = (await axios($, {
         method: "GET",
         url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
@@ -168,7 +159,7 @@ var process;
       console.log(fetchedContent);
       const udKnobaIdContents = mKnobaIds.map((mKnobaId, index) => {
         const maybeKnobaMatch = inContentData[index].maybeKnobaMatch;
-        const fetchedExternalIds: Set<string> = new Set(JSON.parse(fetchedContent[mKnobaId].metadata.external_ids));
+        const fetchedExternalIds = new Set(JSON.parse(fetchedContent[mKnobaId].metadata.external_ids));
         if (maybeKnobaMatch && Math.abs(maybeKnobaMatch.score - 1) < 0.05) {
           fetchedExternalIds.delete(qExternalId);
           return {
@@ -205,13 +196,8 @@ var process;
         }
       });
       await $.myDatastore.set(qExternalId, JSON.stringify(udKnobaIdContents.map(({ uKnobaIdContent: { knobaId } }) => knobaId)));
-      type UDKnobaIdContent = { uKnobaIdContent: KnobaIdContent, dKnobaIdContent: KnobaIdContent };
-      type GUDKnobaIdContents = {
-        isContentUpsert: UDKnobaIdContent[],
-        notContentUpsert: { withDelete: UDKnobaIdContent[], withDUpsert: UDKnobaIdContent[] },
-      };
       const gUDKnobaIdContents = udKnobaIdContents.reduce(
-        (gUDKnobaIdContents: GUDKnobaIdContents, udKnobaIdContent) => {
+        (gUDKnobaIdContents, udKnobaIdContent) => {
           if (udKnobaIdContent.isContentUpsert) {
             gUDKnobaIdContents.isContentUpsert.push(udKnobaIdContent);
           } else if (udKnobaIdContent.dKnobaIdContent.externalIds.size > 0) {
@@ -235,8 +221,7 @@ var process;
           },
         });
       }
-      type UKnobaIdContent = { uKnobaIdContent: KnobaIdContent };
-      const emptyUpsertVectors: UKnobaIdContent[] = [];
+      const emptyUpsertVectors = [];
       await Promise.all([
         axios($, {
           method: "POST",
@@ -310,10 +295,10 @@ var process;
         ))),
       ]);
     };
-    async function knobaIngest(qExternalId: string, inContentData: IngestedContentDataItem[], $): Promise<void> {
+    async function knobaIngest(qExternalId, inContentData, $) {
       const toUpsertContent = await Promise.all(inContentData.map(async ({ content, embedding, maybeKnobaMatch }) => {
         const [knobaId, externalIds] = maybeKnobaMatch
-          ? [maybeKnobaMatch.match.knobaId, maybeKnobaMatch.match.externalIds.add(qExternalId)]
+          ? [maybeKnobaMatch.knobaId, maybeKnobaMatch.externalIds.add(qExternalId)]
           : [uuidv4(), new Set([qExternalId])];
         return { knobaId, embedding, content, externalIds };
       }));
@@ -336,7 +321,7 @@ var process;
         },
       });
     };
-    export async function handleUpsert(externalTypeQ: string, rawExternalId: string, $): Promise<void> {
+    async function handleUpsert(externalTypeQ, rawExternalId, $) {
       const qExternalId = `${externalTypeQ}_${rawExternalId}`;
       const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
       const mKnobaIds = mKnobaIdsStr ? JSON.parse(mKnobaIdsStr) : mKnobaIdsStr;
