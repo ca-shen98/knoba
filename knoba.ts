@@ -8,9 +8,9 @@ var process;
       if (!mKnobaIdsStr) {
         return;
       }
-      const mKnobaIds = JSON.parse(mKnobaIdsStr);
+      const mKnobaIds = new Set(JSON.parse(mKnobaIdsStr));
       await $.myDatastore.delete(qExternalId);
-      await Promise.all(mKnobaIds?.map(async (knobaId) => {
+      await Promise.all(Array.from(mKnobaIds).map(async (knobaId) => {
         const fetchResp = await axios($, {
           method: "GET",
           url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch?ids=${knobaId}`,
@@ -19,7 +19,7 @@ var process;
           },
         });
         console.log(fetchResp);
-        const externalIds = JSON.parse(fetchResp.vectors[knobaId].metadata.external_ids)
+        const externalIds: string[] = JSON.parse(fetchResp.vectors[knobaId].metadata.external_ids)
           .filter((externalId) => externalId != qExternalId);
         if (externalIds.length > 0) {
           await axios($, {
@@ -46,9 +46,7 @@ var process;
             headers: {
               "Api-Key": `${$.pinecone.$auth.api_key}`,
             },
-            data: {
-              ids: [knobaId],
-            },
+            data: { ids: [knobaId] },
           });
         }
       }));
@@ -119,11 +117,11 @@ var process;
       externalIds: Set<string>,
     };
     type KnobaMatch = { score: number, match: KnobaIdContent };
-    type IngestedContentDataItem = { content: string, embedding: number[], maybeKnobaMatch: KnobaMatch | undefined };
+    type IngestedContentDataItem = { content: string, embedding: number[], maybeKnobaMatch?: KnobaMatch };
     async function getIngestedContentData(externalTypeQ: string, rawExternalId: string, $): Promise<Array<IngestedContentDataItem>> {
       const contentEmbeddings = await getContentEmbeddings(externalTypeQ, rawExternalId, $);
       return await Promise.all(contentEmbeddings.map(async ({ embedding, content }) => {
-        const matchResp = await axios($, {
+        const queriedMatches = await axios($, {
           method: "POST",
           url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/query`,
           headers: {
@@ -135,9 +133,9 @@ var process;
             includeValues: false,
             includeMetadata: true,
           },
-        });
-        console.log(matchResp);
-        const wrMaybeMatch = matchResp.matches.filter((match) => Math.abs(match.score - 1) < 0.05)
+        }).matches;
+        console.log(queriedMatches);
+        const wrMaybeMatch = queriedMatches.filter((match) => Math.abs(match.score - 1) < 0.25)
           .map(({ score, id, values, metadata }) => ({
             score,
             match: {
@@ -154,196 +152,160 @@ var process;
         };
       }));
     };
-    async function upsertContent(qExternalId: string, mKnobaIds: string[], inContentData: IngestedContentDataItem[], $): Promise<void> {
-      const fetchedContent = (await axios($, {
+    async function upsertContent(qExternalId: string, mKnobaIds: Set<string>, inContentData: IngestedContentDataItem[], $): Promise<void> {
+      const udKnobaIdContents = inContentData.map(({ content, embedding, maybeKnobaMatch }) => {
+        if (maybeKnobaMatch && Math.abs(maybeKnobaMatch.score - 1) < 0.1) {
+          return {
+            uKnobaIdContent: {
+              knobaId: maybeKnobaMatch.match.knobaId,
+              embedding,
+              content,
+              externalIds: new Set(maybeKnobaMatch.match.externalIds).add(qExternalId),
+            },
+            ...(Math.abs(maybeKnobaMatch.score - 1) < 0.01 && { dKnobaIdContent: {
+              knobaId: maybeKnobaMatch.match.knobaId,
+              embedding: maybeKnobaMatch.match.embedding,
+              content: maybeKnobaMatch.match.content,
+              externalIds: maybeKnobaMatch.match.externalIds,
+            } }),
+          };
+        } else {
+          return {
+            uKnobaIdContent: {
+              knobaId: uuidv4(),
+              embedding,
+              content,
+              externalIds: new Set(qExternalId),
+            },
+          };
+        }
+      });
+      const onKnobaIds = udKnobaIdContents.map(({ uKnobaIdContent: { knobaId } }) => knobaId);
+      await $.myDatastore.set(qExternalId, JSON.stringify(onKnobaIds));
+      const snKnobaIds = new Set(onKnobaIds);
+      const dKnobaIds = Array.from(mKnobaIds).filter((mKnobaId) => snKnobaIds.has(mKnobaId))
+      type KnobaVector = { id: string, values: number[], metadata: { content: string, external_ids: string } };
+      const fetchedContent: KnobaVector[] = (await axios($, {
         method: "GET",
         url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
         headers: {
           "Api-Key": `${$.pinecone.$auth.api_key}`,
         },
-        data: {
-          ids: mKnobaIds,
-        },
+        data: { ids: dKnobaIds },
       })).vectors;
       console.log(fetchedContent);
-      const udKnobaIdContents = mKnobaIds.map((mKnobaId, index) => {
-        const maybeKnobaMatch = inContentData[index].maybeKnobaMatch;
-        const fetchedExternalIds: Set<string> = new Set(JSON.parse(fetchedContent[mKnobaId].metadata.external_ids));
-        if (maybeKnobaMatch && Math.abs(maybeKnobaMatch.score - 1) < 0.05) {
-          fetchedExternalIds.delete(qExternalId);
-          return {
-            isContentUpsert: false,
-            uKnobaIdContent: {
-              knobaId: maybeKnobaMatch.match.knobaId,
-              embedding: maybeKnobaMatch.match.embedding,
-              content: maybeKnobaMatch.match.content,
-              externalIds: maybeKnobaMatch.match.externalIds.add(qExternalId),
-            },
-            dKnobaIdContent: {
-              knobaId: fetchedContent[mKnobaId].id,
-              embedding: fetchedContent[mKnobaId].values,
-              content: fetchedContent[mKnobaId].metadata.content,
-              externalIds: fetchedExternalIds,
-            },
-          };
+      type UDKnobaIdContent = { knobaId: string, embedding: number[], content: string, externalIds: Set<string> };
+      type GDKnobaIds = { dKnobaIdDeletes: string[], dKnobaIdUpserts: { uKnobaIdContent: UDKnobaIdContent }[] };
+      const gdKnobaIds = Object.values(fetchedContent).reduce((gdKnobaIds: GDKnobaIds, fetchedContentItem) => {
+        const externalIds: Set<string> = new Set(JSON.parse(fetchedContentItem.metadata.external_ids));
+        if (externalIds.size == 1 && externalIds.has(qExternalId)) {
+          gdKnobaIds.dKnobaIdDeletes.push(fetchedContentItem.id);
         } else {
-          return {
-            isContentUpsert: true,
+          externalIds.delete(qExternalId);
+          gdKnobaIds.dKnobaIdUpserts.push({
             uKnobaIdContent: {
-              knobaId: fetchedContent[mKnobaId].id,
-              embedding: inContentData[index].embedding,
-              content: inContentData[index].content,
-              externalIds: fetchedExternalIds,
+              knobaId: fetchedContentItem.id,
+              embedding: fetchedContentItem.values,
+              content: fetchedContentItem.metadata.content,
+              externalIds,
             },
-            dKnobaIdContent: {
-              knobaId: fetchedContent[mKnobaId].id,
-              embedding: fetchedContent[mKnobaId].values,
-              content: fetchedContent[mKnobaId].metadata.content,
-              externalIds: fetchedExternalIds,
-            },
-          };
+          });
         }
-      });
-      await $.myDatastore.set(qExternalId, JSON.stringify(udKnobaIdContents.map(({ uKnobaIdContent: { knobaId } }) => knobaId)));
-      type UDKnobaIdContent = { uKnobaIdContent: KnobaIdContent, dKnobaIdContent: KnobaIdContent };
-      type GUDKnobaIdContents = {
-        isContentUpsert: UDKnobaIdContent[],
-        notContentUpsert: { withDelete: UDKnobaIdContent[], withDUpsert: UDKnobaIdContent[] },
-      };
-      const gUDKnobaIdContents = udKnobaIdContents.reduce(
-        (gUDKnobaIdContents: GUDKnobaIdContents, udKnobaIdContent) => {
-          if (udKnobaIdContent.isContentUpsert) {
-            gUDKnobaIdContents.isContentUpsert.push(udKnobaIdContent);
-          } else if (udKnobaIdContent.dKnobaIdContent.externalIds.size > 0) {
-            gUDKnobaIdContents.notContentUpsert.withDUpsert.push(udKnobaIdContent);
-          } else {
-            gUDKnobaIdContents.notContentUpsert.withDelete.push(udKnobaIdContent);
-          }
-          return gUDKnobaIdContents;
-        },
-        { isContentUpsert: [], notContentUpsert: { withDelete: [], withDUpsert: [] } }
-      );
-      if (gUDKnobaIdContents.notContentUpsert.withDelete.length > 0) {
-        await axios($, {
-          method: "POST",
-          url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/delete`,
-          headers: {
-            "Api-Key": `${$.pinecone.$auth.api_key}`,
-          },
-          data: {
-            ids: gUDKnobaIdContents.notContentUpsert.withDelete.map(({ dKnobaIdContent: { knobaId } }) => knobaId),
-          },
-        });
-      }
-      type UKnobaIdContent = { uKnobaIdContent: KnobaIdContent };
-      const emptyUpsertVectors: UKnobaIdContent[] = [];
-      await Promise.all([
-        axios($, {
+        return gdKnobaIds;
+      }, { dKnobaIdDeletes: [], dKnobaIdUpserts: [] });
+      type MUDKnobaIdContents = { [knobaId: string]: { uKnobaIdContent: UDKnobaIdContent, dKnobaIdContent?: UDKnobaIdContent } };
+      const mudKnobaIdContents = udKnobaIdContents.reduce((mudKnobaIdContents: MUDKnobaIdContents, udKnobaIdContent) => {
+        if (!(udKnobaIdContent.uKnobaIdContent.knobaId in mudKnobaIdContents)
+          || !("dKnobaIdContent" in mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId])
+          || "dKnobaIdContent" in udKnobaIdContent) {
+          mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId] = udKnobaIdContent;
+        }
+        return mudKnobaIdContents;
+      }, {});
+      const knobaUpserts = [ ...Object.values(mudKnobaIdContents), ...gdKnobaIds.dKnobaIdUpserts ];
+      const contentUpserts = Object.values(mudKnobaIdContents).filter((udKnobaIdContent) => "dKnobaIdContent" in udKnobaIdContent);
+      await Promise.all(
+        [axios($, {
           method: "POST",
           url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/upsert`,
           headers: {
             "Api-Key": `${$.pinecone.$auth.api_key}`,
           },
           data: {
-            vectors: emptyUpsertVectors.concat(gUDKnobaIdContents.isContentUpsert)
-              .concat(gUDKnobaIdContents.notContentUpsert.withDelete)
-              .concat(gUDKnobaIdContents.notContentUpsert.withDUpsert)
-              .concat(gUDKnobaIdContents.notContentUpsert.withDUpsert
-                .map(({ dKnobaIdContent }) => ({ uKnobaIdContent: dKnobaIdContent })))
-              .map(({ uKnobaIdContent }) => ({
-                id: uKnobaIdContent.knobaId,
-                values: uKnobaIdContent.embedding,
-                metadata: {
-                  content: uKnobaIdContent.content,
-                  external_ids: Array.from(uKnobaIdContent.externalIds),
-                },
-              })),
+            vectors: knobaUpserts.map(({ uKnobaIdContent }) => ({
+              id: uKnobaIdContent.knobaId,
+              values: uKnobaIdContent.embedding,
+              metadata: {
+                content: uKnobaIdContent.content,
+                external_ids: uKnobaIdContent.externalIds,
+              },
+            })),
           },
-        }),
-        Promise.all(gUDKnobaIdContents.isContentUpsert.map(async ({ uKnobaIdContent, dKnobaIdContent }) => await Promise.all(
-          Array.from(uKnobaIdContent.externalIds)
-            .filter((externalId) => externalId != qExternalId)
-            .map(async (externalId) => {
-              if (externalId.startsWith("notion_")) {
-                await axios($, {
-                  method: "PATCH",
-                  url: `https://api.notion.com/v1/blocks/${externalId.substring(7)}`,
-                  headers: {
-                    Authorization: `Bearer ${$.notion.$auth.oauth_access_token}`,
-                    "Notion-Version": `2022-06-28`,
-                  },
-                  data: {
-                    paragraph: {
-                      rich_text: [
-                        {
-                          text: {
-                            content: uKnobaIdContent.content,
-                          },
-                        },
-                      ],
-                    },
-                  },
-                });
-              } else if (externalId.startsWith("gdocs_")) {
-                await axios($, {
-                  method: "POST",
-                  url: `https://docs.googleapis.com/v1/documents/${externalId.substring(6)}:batchUpdate`,
-                  headers: {
-                    Authorization: `Bearer ${$.google_docs.$auth.oauth_access_token}`,
-                  },
-                  data: {
-                    requests: [
-                      {
-                        replaceAllText: {
-                          containsText: {
-                            text: dKnobaIdContent.content,
-                            matchCase: true,
-                          },
-                          replaceText: uKnobaIdContent.content,
+        })]
+          .concat(gdKnobaIds.dKnobaIdDeletes.length > 0
+            ? [axios($, {
+              method: "POST",
+              url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/delete`,
+              headers: {
+                "Api-Key": `${$.pinecone.$auth.api_key}`,
+              },
+              data: { ids: gdKnobaIds.dKnobaIdDeletes },
+            })] : [])
+          .concat(contentUpserts.length > 0
+            ? [Promise.all(contentUpserts.map(async ({ uKnobaIdContent, dKnobaIdContent }) => await Promise.all(
+              Array.from(uKnobaIdContent.externalIds)
+                .filter((externalId) => externalId != qExternalId)
+                .map(async (externalId) => {
+                  if (externalId.startsWith("notion_")) {
+                    await axios($, {
+                      method: "PATCH",
+                      url: `https://api.notion.com/v1/blocks/${externalId.substring(7)}`,
+                      headers: {
+                        Authorization: `Bearer ${$.notion.$auth.oauth_access_token}`,
+                        "Notion-Version": `2022-06-28`,
+                      },
+                      data: {
+                        paragraph: {
+                          rich_text: [
+                            {
+                              text: {
+                                content: uKnobaIdContent.content,
+                              },
+                            },
+                          ],
                         },
                       },
-                    ],
-                  },
-                });
-              }
-            })
-        ))),
-      ]);
-    };
-    async function knobaIngest(qExternalId: string, inContentData: IngestedContentDataItem[], $): Promise<void> {
-      const toUpsertContent = await Promise.all(inContentData.map(async ({ content, embedding, maybeKnobaMatch }) => {
-        const [knobaId, externalIds] = maybeKnobaMatch
-          ? [maybeKnobaMatch.match.knobaId, maybeKnobaMatch.match.externalIds.add(qExternalId)]
-          : [uuidv4(), new Set([qExternalId])];
-        return { knobaId, embedding, content, externalIds };
-      }));
-      await $.myDatastore.set(qExternalId, JSON.stringify(toUpsertContent.map(({ knobaId }) => knobaId)));
-      await axios($, {
-        method: "POST",
-        url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/upsert`,
-        headers: {
-          "Api-Key": `${$.pinecone.$auth.api_key}`,
-        },
-        data: {
-          vectors: toUpsertContent.map(({ knobaId, embedding, content, externalIds }) => ({
-            id: knobaId,
-            values: embedding,
-            metadata: {
-              content: content,
-              external_ids: Array.from(externalIds),
-            },
-          })),
-        },
-      });
+                    });
+                  } else if (externalId.startsWith("gdocs_")) {
+                    await axios($, {
+                      method: "POST",
+                      url: `https://docs.googleapis.com/v1/documents/${externalId.substring(6)}:batchUpdate`,
+                      headers: {
+                        Authorization: `Bearer ${$.google_docs.$auth.oauth_access_token}`,
+                      },
+                      data: {
+                        requests: [
+                          {
+                            replaceAllText: {
+                              containsText: {
+                                text: dKnobaIdContent?.content,
+                                matchCase: true,
+                              },
+                              replaceText: uKnobaIdContent.content,
+                            },
+                          },
+                        ],
+                      },
+                    });
+                  }
+                })
+            )))] : [])
+      );
     };
     export async function handleUpsert(externalTypeQ: string, rawExternalId: string, $): Promise<void> {
       const qExternalId = `${externalTypeQ}_${rawExternalId}`;
       const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
-      const mKnobaIds = mKnobaIdsStr ? JSON.parse(mKnobaIdsStr) : mKnobaIdsStr;
+      const mKnobaIds: Set<string> = mKnobaIdsStr ? new Set(JSON.parse(mKnobaIdsStr)) : new Set();
       const inContentData = await getIngestedContentData(externalTypeQ, rawExternalId, $);
-      if (mKnobaIds) {
-        await upsertContent(qExternalId, mKnobaIds, inContentData, $);
-      } else {
-        await knobaIngest(qExternalId, inContentData, $);
-      }
+      await upsertContent(qExternalId, mKnobaIds, inContentData, $);
     };
