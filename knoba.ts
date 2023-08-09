@@ -2,8 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { axios } from "@pipedream/platform"
 var process;
     
-    export async function deleteIfExists(externalTypeQ: string, rawExternalId: string, $): Promise<void> {
-      const qExternalId = `${externalTypeQ}_${rawExternalId}`;
+    export async function deleteIfExists(qExternalId: string, $): Promise<void> {
       const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
       if (!mKnobaIdsStr) {
         return;
@@ -52,7 +51,10 @@ var process;
       }));
     };
     type ContentEmbedding = { embedding: number[], content: string };
-    async function getContentEmbeddings(externalTypeQ: string, rawExternalId: string, $): Promise<Array<ContentEmbedding>> {
+    async function getContentEmbeddings(qExternalId: string, $): Promise<Array<ContentEmbedding>> {
+      const prefixSplitIdx = qExternalId.indexOf("_");
+      const externalTypeQ = qExternalId.substring(0, prefixSplitIdx);
+      const rawExternalId = qExternalId.substring(prefixSplitIdx + 1);
       switch (externalTypeQ) {
         case "notion":
           const notionGetResp = await axios($, {
@@ -118,8 +120,8 @@ var process;
     };
     type KnobaMatch = { score: number, match: KnobaIdContent };
     type IngestedContentDataItem = { content: string, embedding: number[], maybeKnobaMatch?: KnobaMatch };
-    async function getIngestedContentData(externalTypeQ: string, rawExternalId: string, $): Promise<Array<IngestedContentDataItem>> {
-      const contentEmbeddings = await getContentEmbeddings(externalTypeQ, rawExternalId, $);
+    async function getIngestedContentData(qExternalId: string, $): Promise<Array<IngestedContentDataItem>> {
+      const contentEmbeddings = await getContentEmbeddings(qExternalId, $);
       return await Promise.all(contentEmbeddings.map(async ({ embedding, content }) => {
         const queriedMatches = await axios($, {
           method: "POST",
@@ -302,10 +304,9 @@ var process;
             )))] : [])
       );
     };
-    export async function handleUpsert(externalTypeQ: string, rawExternalId: string, $): Promise<void> {
-      const qExternalId = `${externalTypeQ}_${rawExternalId}`;
+    export async function handleUpsert(qExternalId: string, $): Promise<void> {
       const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
       const mKnobaIds: Set<string> = mKnobaIdsStr ? new Set(JSON.parse(mKnobaIdsStr)) : new Set();
-      const inContentData = await getIngestedContentData(externalTypeQ, rawExternalId, $);
+      const inContentData = await getIngestedContentData(qExternalId, $);
       await upsertContent(qExternalId, mKnobaIds, inContentData, $);
     };
