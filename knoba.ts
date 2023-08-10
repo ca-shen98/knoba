@@ -277,20 +277,23 @@ var process, assert;
           if (!uqExternalIds) {
             assert(dqExternalIds && dqExternalIds.size > 0);
             assert(mudKnobaId in fetchedContent);
-            const fExternalIds: Set<string> = new Set(JSON.parse(fetchedContent[mudKnobaId].metadata.external_ids));
-            if (fExternalIds.size == dqExternalIds?.size
-              && Array.from(fExternalIds).every((fExternalId) => dqExternalIds?.has(fExternalId))) {
-                gudKnobaIdContents.deletes.push(mudKnobaId);
-            } else { // >
-              dqExternalIds?.forEach((dqExternalId) => fExternalIds.delete(dqExternalId));
-              gudKnobaIdContents.upserts.push({
-                uKnobaIdContent: {
-                  knobaId: mudKnobaId,
-                  embedding: fetchedContent[mudKnobaId].embedding,
-                  content: fetchedContent[mudKnobaId].metadata.content,
-                  externalIds: fExternalIds,
-                },
-              });
+            if (dqExternalIds) {
+              const fExternalIds: Set<string> = new Set(JSON.parse(fetchedContent[mudKnobaId].metadata.external_ids));
+              if (fExternalIds.size == dqExternalIds.size
+                && Array.from(fExternalIds).every((fExternalId) => dqExternalIds.has(fExternalId))) {
+                  gudKnobaIdContents.deletes.push(mudKnobaId);
+              } else {
+                assert(fExternalIds.size > dqExternalIds.size)
+                dqExternalIds.forEach((dqExternalId) => fExternalIds.delete(dqExternalId));
+                gudKnobaIdContents.upserts.push({
+                  uKnobaIdContent: {
+                    knobaId: mudKnobaId,
+                    embedding: fetchedContent[mudKnobaId].embedding,
+                    content: fetchedContent[mudKnobaId].metadata.content,
+                    externalIds: fExternalIds,
+                  },
+                });
+              }
             }
           } else {
             assert(uqExternalIds.size > 0 && (!dqExternalIds || Array.from(dqExternalIds)
@@ -298,8 +301,8 @@ var process, assert;
             assert(knobaIdContents);
             if (knobaIdContents) {
               const udExternalIds = knobaIdContents.uKnobaIdContent.externalIds;
-              uqExternalIds.forEach((uqExternalId) => udExternalIds?.add(uqExternalId));
-              dqExternalIds?.forEach((dqExternalId) => udExternalIds?.delete(dqExternalId));
+              uqExternalIds.forEach((uqExternalId) => udExternalIds.add(uqExternalId));
+              dqExternalIds?.forEach((dqExternalId) => udExternalIds.delete(dqExternalId));
               gudKnobaIdContents.upserts.push({
                 uKnobaIdContent: {
                   knobaId: knobaIdContents.uKnobaIdContent.knobaId,
@@ -354,47 +357,50 @@ var process, assert;
           ? [Promise.all(contentUpserts.map(async ({ uKnobaIdContent, dKnobaIdContent }) => await Promise.all(
             Array.from(uKnobaIdContent.externalIds)
               .map(async (externalId) => {
-                if (externalId.startsWith("notion_")) {
-                  await axios($, {
-                    method: "PATCH",
-                    url: `https://api.notion.com/v1/blocks/${externalId.substring(7)}`,
-                    headers: {
-                      Authorization: `Bearer ${$.notion.$auth.oauth_access_token}`,
-                      "Notion-Version": `2022-06-28`,
-                    },
-                    data: {
-                      paragraph: {
-                        rich_text: [
+                assert(dKnobaIdContent);
+                if (dKnobaIdContent) {
+                  if (externalId.startsWith("notion_")) {
+                    await axios($, {
+                      method: "PATCH",
+                      url: `https://api.notion.com/v1/blocks/${externalId.substring(7)}`,
+                      headers: {
+                        Authorization: `Bearer ${$.notion.$auth.oauth_access_token}`,
+                        "Notion-Version": `2022-06-28`,
+                      },
+                      data: {
+                        paragraph: {
+                          rich_text: [
+                            {
+                              text: {
+                                content: uKnobaIdContent.content,
+                              },
+                            },
+                          ],
+                        },
+                      },
+                    });
+                  } else if (externalId.startsWith("gdocs_")) {
+                    await axios($, {
+                      method: "POST",
+                      url: `https://docs.googleapis.com/v1/documents/${externalId.substring(6)}:batchUpdate`,
+                      headers: {
+                        Authorization: `Bearer ${$.google_docs.$auth.oauth_access_token}`,
+                      },
+                      data: {
+                        requests: [
                           {
-                            text: {
-                              content: uKnobaIdContent.content,
+                            replaceAllText: {
+                              containsText: {
+                                text: dKnobaIdContent.content,
+                                matchCase: true,
+                              },
+                              replaceText: uKnobaIdContent.content,
                             },
                           },
                         ],
                       },
-                    },
-                  });
-                } else if (externalId.startsWith("gdocs_")) {
-                  await axios($, {
-                    method: "POST",
-                    url: `https://docs.googleapis.com/v1/documents/${externalId.substring(6)}:batchUpdate`,
-                    headers: {
-                      Authorization: `Bearer ${$.google_docs.$auth.oauth_access_token}`,
-                    },
-                    data: {
-                      requests: [
-                        {
-                          replaceAllText: {
-                            containsText: {
-                              text: dKnobaIdContent?.content,
-                              matchCase: true,
-                            },
-                            replaceText: uKnobaIdContent.content,
-                          },
-                        },
-                      ],
-                    },
-                  });
+                    });
+                  }
                 }
               })
           )))] : [])
