@@ -242,6 +242,7 @@ var process, assert;
           });
           return mudKnobaIdContents;
         }, {});
+      // combine remove into here?
       mKnobaIdsBatch.forEach((mKnobaIds, index) => mKnobaIds.forEach((mKnobaId) => {
         if (!(mKnobaId in mudKnobaIdContents)) {
           mudKnobaIdContents[mKnobaId] = { ud: {} };
