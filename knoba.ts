@@ -1,8 +1,8 @@
 import { v4 as uuidv4 } from 'uuid'
 import { axios } from "@pipedream/platform"
-var process;
+var process, assert;
     
-    export async function deleteIfExists(qExternalId: string, $): Promise<void> {
+    export async function handleRemove(qExternalId: string, $): Promise<void> {
       const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
       if (!mKnobaIdsStr) {
         return;
@@ -50,67 +50,43 @@ var process;
         }
       }));
     };
-    type ContentEmbedding = { embedding: number[], content: string };
-    async function getContentEmbeddings(qExternalId: string, $): Promise<Array<ContentEmbedding>> {
-      const prefixSplitIdx = qExternalId.indexOf("_");
-      const externalTypeQ = qExternalId.substring(0, prefixSplitIdx);
-      const rawExternalId = qExternalId.substring(prefixSplitIdx + 1);
-      switch (externalTypeQ) {
-        case "notion":
-          const notionGetResp = await axios($, {
-            url: `https://api.notion.com/v1/blocks/${rawExternalId}`,
-            headers: {
-              Authorization: `Bearer ${$.notion.$auth.oauth_access_token}`,
-              "Notion-Version": `2022-06-28`,
-            },
-          });
-          console.log(notionGetResp);
-          const content = notionGetResp.paragraph.rich_text[0].plain_text.trim();
-          const embedding = (await axios($, {
-            method: "POST",
-            url: `https://api.openai.com/v1/embeddings`,
-            headers: {
-              Authorization: `Bearer ${$.openai.$auth.api_key}`,
-            },
-            data: {
-              model: "text-embedding-ada-002",
-              input: content,
-            },
-          })).data[0].embedding;
-          return [{ embedding, content }];
-        case "gdocs":
-          const gdocsGetResp = await axios($, {
-            method: "GET",
-            url: `https://docs.googleapis.com/v1/documents/${rawExternalId}`,
-            headers: {
-              Authorization: `Bearer ${$.google_docs.$auth.oauth_access_token}`,
-            },
-          });
-          console.log(gdocsGetResp);
-          const gdocsContents = gdocsGetResp.body.content
-            .filter((content) => content.paragraph)
-            .map(({ paragraph }) =>
-              paragraph.elements
-                .map((element) => element.textRun.content)
-                .filter((content) => content && content.trim())
-                .join('').trim())
-            .filter((content) => content && content.trim());
-          const gdocsEmbeddings = (await axios($, {
-            method: "POST",
-            url: `https://api.openai.com/v1/embeddings`,
-            headers: {
-              Authorization: `Bearer ${$.openai.$auth.api_key}`,
-            },
-            data: {
-              model: "text-embedding-ada-002",
-              input: gdocsContents,
-            },
-          })).data;
-          console.log(gdocsEmbeddings);
-          return gdocsEmbeddings.map(({ embedding }, index) => ({ embedding, content: gdocsContents[index] }));
-          default:
-            return [];
-      }
+    async function getContentsBatch(qExternalIdsBatch: string[], $): Promise<string[][]> {
+      return await Promise.all(qExternalIdsBatch.map(async (qExternalId) => {
+        const prefixSplitIdx = qExternalId.indexOf("_");
+        const externalTypeQ = qExternalId.substring(0, prefixSplitIdx);
+        const rawExternalId = qExternalId.substring(prefixSplitIdx + 1);
+        switch (externalTypeQ) {
+          case "notion":
+            const notionGetResp = await axios($, {
+              url: `https://api.notion.com/v1/blocks/${rawExternalId}`,
+              headers: {
+                Authorization: `Bearer ${$.notion.$auth.oauth_access_token}`,
+                "Notion-Version": `2022-06-28`,
+              },
+            });
+            console.log(notionGetResp);
+            return [notionGetResp.paragraph.rich_text[0].plain_text.trim()];
+          case "gdocs":
+            const gdocsGetResp = await axios($, {
+              method: "GET",
+              url: `https://docs.googleapis.com/v1/documents/${rawExternalId}`,
+              headers: {
+                Authorization: `Bearer ${$.google_docs.$auth.oauth_access_token}`,
+              },
+            });
+            console.log(gdocsGetResp);
+            return gdocsGetResp.body.content
+              .filter((content) => content.paragraph)
+              .map(({ paragraph }) =>
+                paragraph.elements
+                  .map((element) => element.textRun.content)
+                  .filter((content) => content && content.trim())
+                  .join('').trim())
+              .filter((content) => content && content.trim());
+            default:
+              return [];
+        }
+      }));
     };
     type KnobaIdContent = {
       knobaId: string,
@@ -119,11 +95,31 @@ var process;
       externalIds: Set<string>,
     };
     type KnobaMatch = { score: number, match: KnobaIdContent };
-    type IngestedContentDataItem = { content: string, embedding: number[], maybeKnobaMatch?: KnobaMatch };
-    async function getIngestedContentData(qExternalId: string, $): Promise<Array<IngestedContentDataItem>> {
-      const contentEmbeddings = await getContentEmbeddings(qExternalId, $);
-      return await Promise.all(contentEmbeddings.map(async ({ embedding, content }) => {
-        const queriedMatches = await axios($, {
+    type IngestedContentDataItem = { embedding: number[], content: string, maybeKnobaMatch?: KnobaMatch };
+    async function getIngestedContentDataBatch(qExternalIdsBatch: string[], $): Promise<IngestedContentDataItem[][]> {
+      const contentsBatch = await getContentsBatch(qExternalIdsBatch, $);
+      const fContentsBatch = contentsBatch.flat();
+      if (fContentsBatch.length == 0) {
+        return contentsBatch.map(() => []);
+      }
+      const fEmbeddingsBatch = (await axios($, {
+        method: "POST",
+        url: `https://api.openai.com/v1/embeddings`,
+        headers: {
+          Authorization: `Bearer ${$.openai.$auth.api_key}`,
+        },
+        data: {
+          model: "text-embedding-ada-002",
+          input: fContentsBatch,
+        },
+      })).data;
+      console.log(fEmbeddingsBatch);
+      assert(fEmbeddingsBatch.length == fContentsBatch.length);
+      return await fEmbeddingsBatch.reduce(async (contentEmbeddingsBatch, embedding) => {
+        while (contentEmbeddingsBatch[-1].length >= contentsBatch[contentEmbeddingsBatch.length - 1].length) {
+          contentEmbeddingsBatch.push([]);
+        }
+        const tQueriedMatch = await axios($, {
           method: "POST",
           url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/query`,
           headers: {
@@ -136,8 +132,8 @@ var process;
             includeMetadata: true,
           },
         }).matches;
-        console.log(queriedMatches);
-        const wrMaybeMatch = queriedMatches.filter((match) => Math.abs(match.score - 1) < 0.25)
+        console.log(tQueriedMatch);
+        const wrMaybeMatch = tQueriedMatch.filter((match) => Math.abs(match.score - 1) < 0.25)
           .map(({ score, id, values, metadata }) => ({
             score,
             match: {
@@ -147,166 +143,228 @@ var process;
               externalIds: new Set(JSON.parse(metadata.external_ids)),
             },
           }));
-        return {
-          content,
+        contentEmbeddingsBatch[-1].push({
           embedding,
+          content: contentsBatch[contentEmbeddingsBatch.length - 1][contentEmbeddingsBatch[-1].length],
           maybeKnobaMatch: wrMaybeMatch.length > 0 ? wrMaybeMatch[0] : undefined,
-        };
-      }));
+        });
+        return contentEmbeddingsBatch;
+      }, []);
     };
-    async function upsertContent(qExternalId: string, mKnobaIds: Set<string>, inContentData: IngestedContentDataItem[], $): Promise<void> {
-      const udKnobaIdContents = inContentData.map(({ content, embedding, maybeKnobaMatch }) => {
-        if (maybeKnobaMatch && Math.abs(maybeKnobaMatch.score - 1) < 0.1) {
-          return {
-            uKnobaIdContent: {
-              knobaId: maybeKnobaMatch.match.knobaId,
-              embedding,
-              content,
-              externalIds: new Set(maybeKnobaMatch.match.externalIds).add(qExternalId),
-            },
-            ...(Math.abs(maybeKnobaMatch.score - 1) < 0.01 && { dKnobaIdContent: {
-              knobaId: maybeKnobaMatch.match.knobaId,
-              embedding: maybeKnobaMatch.match.embedding,
-              content: maybeKnobaMatch.match.content,
-              externalIds: maybeKnobaMatch.match.externalIds,
-            } }),
-          };
+    export async function handleUpsert(qExternalIdsBatch: string[], $): Promise<void> {
+      const udKnobaIdContentsBatch = (await getIngestedContentDataBatch(qExternalIdsBatch, $))
+        .map((inContentData, index) => inContentData.map(({ content, embedding, maybeKnobaMatch }) => {
+          if (maybeKnobaMatch && Math.abs(maybeKnobaMatch.score - 1) < 0.1) {
+            return {
+              uKnobaIdContent: {
+                knobaId: maybeKnobaMatch.match.knobaId,
+                embedding,
+                content,
+                externalIds: new Set(maybeKnobaMatch.match.externalIds).add(qExternalIdsBatch[index]),
+              },
+              ...(Math.abs(maybeKnobaMatch.score - 1) < 0.01 && { dKnobaIdContent: {
+                knobaId: maybeKnobaMatch.match.knobaId,
+                embedding: maybeKnobaMatch.match.embedding,
+                content: maybeKnobaMatch.match.content,
+                externalIds: maybeKnobaMatch.match.externalIds,
+              } }),
+            };
+          } else {
+            return {
+              uKnobaIdContent: {
+                knobaId: uuidv4(),
+                embedding,
+                content,
+                externalIds: new Set(qExternalIdsBatch[index]),
+              },
+            };
+          }
+        }));
+      assert(udKnobaIdContentsBatch.length == qExternalIdsBatch.length);
+      const mKnobaIdsBatch: Set<string>[] = await Promise.all(qExternalIdsBatch.map(async (qExternalId) => {
+        const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
+        return mKnobaIdsStr ? new Set(JSON.parse(mKnobaIdsStr)) : new Set();
+      })); // need to get initial state before following mutate
+      await Promise.all(udKnobaIdContentsBatch.map(async (udKnobaIdContents, index) => {
+        const onKnobaIds = udKnobaIdContents.map(({ uKnobaIdContent: { knobaId } }) => knobaId);
+        if (onKnobaIds.length > 0) {
+          await $.myDatastore.set(qExternalIdsBatch[index], JSON.stringify(onKnobaIds));
         } else {
-          return {
-            uKnobaIdContent: {
-              knobaId: uuidv4(),
-              embedding,
-              content,
-              externalIds: new Set(qExternalId),
-            },
-          };
+          await $.myDatastore.delete(qExternalIdsBatch[index]);
         }
-      });
-      const onKnobaIds = udKnobaIdContents.map(({ uKnobaIdContent: { knobaId } }) => knobaId);
-      await $.myDatastore.set(qExternalId, JSON.stringify(onKnobaIds));
-      const snKnobaIds = new Set(onKnobaIds);
-      const dKnobaIds = Array.from(mKnobaIds).filter((mKnobaId) => snKnobaIds.has(mKnobaId))
-      type KnobaVector = { id: string, values: number[], metadata: { content: string, external_ids: string } };
-      const fetchedContent: KnobaVector[] = (await axios($, {
-        method: "GET",
-        url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
-        headers: {
-          "Api-Key": `${$.pinecone.$auth.api_key}`,
-        },
-        data: { ids: dKnobaIds },
-      })).vectors;
-      console.log(fetchedContent);
-      type UDKnobaIdContent = { knobaId: string, embedding: number[], content: string, externalIds: Set<string> };
-      type GDKnobaIds = { dKnobaIdDeletes: string[], dKnobaIdUpserts: { uKnobaIdContent: UDKnobaIdContent }[] };
-      const gdKnobaIds = Object.values(fetchedContent).reduce((gdKnobaIds: GDKnobaIds, fetchedContentItem) => {
-        const externalIds: Set<string> = new Set(JSON.parse(fetchedContentItem.metadata.external_ids));
-        if (externalIds.size == 1 && externalIds.has(qExternalId)) {
-          gdKnobaIds.dKnobaIdDeletes.push(fetchedContentItem.id);
-        } else {
-          externalIds.delete(qExternalId);
-          gdKnobaIds.dKnobaIdUpserts.push({
-            uKnobaIdContent: {
-              knobaId: fetchedContentItem.id,
-              embedding: fetchedContentItem.values,
-              content: fetchedContentItem.metadata.content,
-              externalIds,
-            },
+      }));
+      type MUDKnobaIdContent = { uKnobaIdContent: KnobaIdContent, dKnobaIdContent?: KnobaIdContent };
+      type MUDKnobaIdContents = { [knobaId: string]: {
+        knobaIdContents?: MUDKnobaIdContent,
+        ud: { u?: Set<string>, d?: Set<string> },
+      } };
+      const mudKnobaIdContents: MUDKnobaIdContents = udKnobaIdContentsBatch
+        .reduce((mudKnobaIdContents, udKnobaIdContents, index) => {
+          udKnobaIdContents.forEach((udKnobaIdContent) => {
+            if (!(udKnobaIdContent.uKnobaIdContent.knobaId in mudKnobaIdContents)) {
+              mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId] = {
+                knobaIdContents: udKnobaIdContent,
+                ud: { u: new Set() },
+              };
+            }
+            mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId].u.add(qExternalIdsBatch[index]);
           });
+          return mudKnobaIdContents;
+        }, {});
+      mKnobaIdsBatch.forEach((mKnobaIds, index) => mKnobaIds.forEach((mKnobaId) => {
+        if (!(mKnobaId in mudKnobaIdContents)) {
+          mudKnobaIdContents[mKnobaId] = { ud: {} };
         }
-        return gdKnobaIds;
-      }, { dKnobaIdDeletes: [], dKnobaIdUpserts: [] });
-      type MUDKnobaIdContents = { [knobaId: string]: { uKnobaIdContent: UDKnobaIdContent, dKnobaIdContent?: UDKnobaIdContent } };
-      const mudKnobaIdContents = udKnobaIdContents.reduce((mudKnobaIdContents: MUDKnobaIdContents, udKnobaIdContent) => {
-        if (!(udKnobaIdContent.uKnobaIdContent.knobaId in mudKnobaIdContents)
-          || !("dKnobaIdContent" in mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId])
-          || "dKnobaIdContent" in udKnobaIdContent) {
-          mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId] = udKnobaIdContent;
+        if (!("u" in mudKnobaIdContents[mKnobaId].ud)
+          || !mudKnobaIdContents[mKnobaId].ud.u?.has(qExternalIdsBatch[index])) {
+          if (!("d" in mudKnobaIdContents[mKnobaId].ud)) {
+            mudKnobaIdContents[mKnobaId].ud.d = new Set();
+          }
+          mudKnobaIdContents[mKnobaId].ud.d?.add(qExternalIdsBatch[index]);
         }
-        return mudKnobaIdContents;
-      }, {});
-      const knobaUpserts = [ ...Object.values(mudKnobaIdContents), ...gdKnobaIds.dKnobaIdUpserts ];
-      const contentUpserts = Object.values(mudKnobaIdContents).filter((udKnobaIdContent) => "dKnobaIdContent" in udKnobaIdContent);
-      await Promise.all(
-        [axios($, {
-          method: "POST",
-          url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/upsert`,
+      }));
+      assert(Array.from(new Set(mKnobaIdsBatch.map((mKnobaIds) => Array.from(mKnobaIds)).flat()))
+        .every((mKnobaId) => mKnobaId in mudKnobaIdContents));
+      const dKnobaIds = Object.keys(mudKnobaIdContents)
+        .filter((mudKnobaId) => !("u" in mudKnobaIdContents[mudKnobaId].ud));
+      const fetchedContent = dKnobaIds.length > 0
+        ? (await axios($, {
+          method: "GET",
+          url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
           headers: {
             "Api-Key": `${$.pinecone.$auth.api_key}`,
           },
-          data: {
-            vectors: knobaUpserts.map(({ uKnobaIdContent }) => ({
-              id: uKnobaIdContent.knobaId,
-              values: uKnobaIdContent.embedding,
-              metadata: {
-                content: uKnobaIdContent.content,
-                external_ids: uKnobaIdContent.externalIds,
-              },
-            })),
-          },
-        })]
-          .concat(gdKnobaIds.dKnobaIdDeletes.length > 0
-            ? [axios($, {
-              method: "POST",
-              url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/delete`,
-              headers: {
-                "Api-Key": `${$.pinecone.$auth.api_key}`,
-              },
-              data: { ids: gdKnobaIds.dKnobaIdDeletes },
-            })] : [])
-          .concat(contentUpserts.length > 0
-            ? [Promise.all(contentUpserts.map(async ({ uKnobaIdContent, dKnobaIdContent }) => await Promise.all(
-              Array.from(uKnobaIdContent.externalIds)
-                .filter((externalId) => externalId != qExternalId)
-                .map(async (externalId) => {
-                  if (externalId.startsWith("notion_")) {
-                    await axios($, {
-                      method: "PATCH",
-                      url: `https://api.notion.com/v1/blocks/${externalId.substring(7)}`,
-                      headers: {
-                        Authorization: `Bearer ${$.notion.$auth.oauth_access_token}`,
-                        "Notion-Version": `2022-06-28`,
-                      },
-                      data: {
-                        paragraph: {
-                          rich_text: [
-                            {
-                              text: {
-                                content: uKnobaIdContent.content,
-                              },
-                            },
-                          ],
-                        },
-                      },
-                    });
-                  } else if (externalId.startsWith("gdocs_")) {
-                    await axios($, {
-                      method: "POST",
-                      url: `https://docs.googleapis.com/v1/documents/${externalId.substring(6)}:batchUpdate`,
-                      headers: {
-                        Authorization: `Bearer ${$.google_docs.$auth.oauth_access_token}`,
-                      },
-                      data: {
-                        requests: [
+          data: { ids: dKnobaIds },
+        })).vectors
+        : {};
+      console.log(fetchedContent);
+      assert(Object.keys(fetchedContent).length == dKnobaIds.length);
+      type GUDKnobaIdContents = { deletes: string[], upserts: MUDKnobaIdContent[] };
+      const gudKnobaIdContents = Object.entries(mudKnobaIdContents)
+        .reduce((gudKnobaIdContents: GUDKnobaIdContents,
+          [mudKnobaId, { knobaIdContents, ud: { u: uqExternalIds, d: dqExternalIds } }]) => {
+          if (!uqExternalIds) {
+            assert(dqExternalIds && dqExternalIds.size > 0);
+            assert(mudKnobaId in fetchedContent);
+            const fExternalIds: Set<string> = new Set(JSON.parse(fetchedContent[mudKnobaId].metadata.external_ids));
+            if (fExternalIds.size == dqExternalIds?.size
+              && Array.from(fExternalIds).every((fExternalId) => dqExternalIds?.has(fExternalId))) {
+                gudKnobaIdContents.deletes.push(mudKnobaId);
+            } else { // >
+              dqExternalIds?.forEach((dqExternalId) => fExternalIds.delete(dqExternalId));
+              gudKnobaIdContents.upserts.push({
+                uKnobaIdContent: {
+                  knobaId: mudKnobaId,
+                  embedding: fetchedContent[mudKnobaId].embedding,
+                  content: fetchedContent[mudKnobaId].metadata.content,
+                  externalIds: fExternalIds,
+                },
+              });
+            }
+          } else {
+            assert(uqExternalIds.size > 0 && (!dqExternalIds || Array.from(dqExternalIds)
+              .every((dqExternalId) => !uqExternalIds.has(dqExternalId))));
+            assert(knobaIdContents);
+            if (knobaIdContents) {
+              const udExternalIds = knobaIdContents.uKnobaIdContent.externalIds;
+              uqExternalIds.forEach((uqExternalId) => udExternalIds?.add(uqExternalId));
+              dqExternalIds?.forEach((dqExternalId) => udExternalIds?.delete(dqExternalId));
+              gudKnobaIdContents.upserts.push({
+                uKnobaIdContent: {
+                  knobaId: knobaIdContents.uKnobaIdContent.knobaId,
+                  embedding: knobaIdContents.uKnobaIdContent.embedding,
+                  content: knobaIdContents.uKnobaIdContent.content,
+                  externalIds: udExternalIds,
+                },
+                ...(knobaIdContents.dKnobaIdContent && { dKnobaIdContent: knobaIdContents.dKnobaIdContent }),
+              });
+            }
+          }
+          return gudKnobaIdContents;
+        }, { deletes: [], upserts: [] });
+      assert(gudKnobaIdContents.deletes.length + gudKnobaIdContents.upserts.length
+        == Object.keys(mudKnobaIdContents).length);
+      assert(new Set(gudKnobaIdContents.deletes
+        .concat(gudKnobaIdContents.upserts.map(({ uKnobaIdContent: { knobaId }}) => knobaId)))
+        .size == Object.keys(mudKnobaIdContents).length)
+      const contentUpserts = gudKnobaIdContents.upserts
+        .filter((udKnobaIdContent) => "dKnobaIdContent" in udKnobaIdContent);
+      const emptyPromises: Promise<any>[] = [];
+      await Promise.all(emptyPromises
+        .concat(gudKnobaIdContents.upserts.length > 0
+          ? [axios($, {
+            method: "POST",
+            url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/upsert`,
+            headers: {
+              "Api-Key": `${$.pinecone.$auth.api_key}`,
+            },
+            data: {
+              vectors: gudKnobaIdContents.upserts.map(({ uKnobaIdContent }) => ({
+                id: uKnobaIdContent.knobaId,
+                values: uKnobaIdContent.embedding,
+                metadata: {
+                  content: uKnobaIdContent.content,
+                  external_ids: uKnobaIdContent.externalIds,
+                },
+              })),
+            },
+          })] : [])
+        .concat(gudKnobaIdContents.deletes.length > 0
+          ? [axios($, {
+            method: "POST",
+            url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/delete`,
+            headers: {
+              "Api-Key": `${$.pinecone.$auth.api_key}`,
+            },
+            data: { ids: gudKnobaIdContents.deletes },
+          })] : [])
+        .concat(contentUpserts.length > 0
+          ? [Promise.all(contentUpserts.map(async ({ uKnobaIdContent, dKnobaIdContent }) => await Promise.all(
+            Array.from(uKnobaIdContent.externalIds)
+              .map(async (externalId) => {
+                if (externalId.startsWith("notion_")) {
+                  await axios($, {
+                    method: "PATCH",
+                    url: `https://api.notion.com/v1/blocks/${externalId.substring(7)}`,
+                    headers: {
+                      Authorization: `Bearer ${$.notion.$auth.oauth_access_token}`,
+                      "Notion-Version": `2022-06-28`,
+                    },
+                    data: {
+                      paragraph: {
+                        rich_text: [
                           {
-                            replaceAllText: {
-                              containsText: {
-                                text: dKnobaIdContent?.content,
-                                matchCase: true,
-                              },
-                              replaceText: uKnobaIdContent.content,
+                            text: {
+                              content: uKnobaIdContent.content,
                             },
                           },
                         ],
                       },
-                    });
-                  }
-                })
-            )))] : [])
+                    },
+                  });
+                } else if (externalId.startsWith("gdocs_")) {
+                  await axios($, {
+                    method: "POST",
+                    url: `https://docs.googleapis.com/v1/documents/${externalId.substring(6)}:batchUpdate`,
+                    headers: {
+                      Authorization: `Bearer ${$.google_docs.$auth.oauth_access_token}`,
+                    },
+                    data: {
+                      requests: [
+                        {
+                          replaceAllText: {
+                            containsText: {
+                              text: dKnobaIdContent?.content,
+                              matchCase: true,
+                            },
+                            replaceText: uKnobaIdContent.content,
+                          },
+                        },
+                      ],
+                    },
+                  });
+                }
+              })
+          )))] : [])
       );
-    };
-    export async function handleUpsert(qExternalId: string, $): Promise<void> {
-      const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
-      const mKnobaIds: Set<string> = mKnobaIdsStr ? new Set(JSON.parse(mKnobaIdsStr)) : new Set();
-      const inContentData = await getIngestedContentData(qExternalId, $);
-      await upsertContent(qExternalId, mKnobaIds, inContentData, $);
     };
