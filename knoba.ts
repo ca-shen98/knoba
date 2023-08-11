@@ -74,11 +74,14 @@ var process;
         },
       })).data;
       console.log(fEmbeddingsBatch);
+      assert(fEmbeddingsBatch.length > 0);
       assert(fEmbeddingsBatch.length == fContentsBatch.length);
       return await fEmbeddingsBatch.reduce(async (contentEmbeddingsBatch, { embedding }) => {
-        while (contentEmbeddingsBatch.length == 0 || (contentEmbeddingsBatch.length < contentsBatch.length
-          && contentEmbeddingsBatch[contentEmbeddingsBatch.length - 1].length
-            == contentsBatch[contentEmbeddingsBatch.length - 1].length)) { // TODO?
+        assert(contentEmbeddingsBatch.length < contentsBatch.length
+          || contentEmbeddingsBatch[contentEmbeddingsBatch.length - 1].length
+            < contentsBatch[contentEmbeddingsBatch.length - 1].length);
+        while (contentEmbeddingsBatch[contentEmbeddingsBatch.length - 1].length
+          == contentsBatch[contentEmbeddingsBatch.length - 1].length) {
           contentEmbeddingsBatch.push([]);
         }
         const tQueriedMatch = (await axios($, {
@@ -112,7 +115,7 @@ var process;
           maybeKnobaMatch: wrMaybeMatch.length > 0 ? wrMaybeMatch[0] : undefined,
         });
         return contentEmbeddingsBatch;
-      }, []);
+      }, [[]]);
     };
     async function handlReceive(uqExternalIdsBatch: string[], dqExternalIdsBatch: string[], $): Promise<void> {
       assert(uqExternalIdsBatch.length + dqExternalIdsBatch.length
