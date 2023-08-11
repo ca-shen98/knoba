@@ -75,12 +75,13 @@ var process;
       })).data;
       console.log(fEmbeddingsBatch);
       assert(fEmbeddingsBatch.length == fContentsBatch.length);
-      return await fEmbeddingsBatch.reduce(async (contentEmbeddingsBatch, embedding) => {
-        while (contentEmbeddingsBatch.length == 0
-          || contentEmbeddingsBatch[-1].length >= contentsBatch[contentEmbeddingsBatch.length - 1].length) {
+      return await fEmbeddingsBatch.reduce(async (contentEmbeddingsBatch, { embedding }) => {
+        while (contentEmbeddingsBatch.length == 0 || (contentEmbeddingsBatch.length < contentsBatch.length
+          && contentEmbeddingsBatch[contentEmbeddingsBatch.length - 1].length
+            == contentsBatch[contentEmbeddingsBatch.length - 1].length)) { // TODO?
           contentEmbeddingsBatch.push([]);
         }
-        const tQueriedMatch = await axios($, {
+        const tQueriedMatch = (await axios($, {
           method: "POST",
           url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/query`,
           headers: {
@@ -89,10 +90,10 @@ var process;
           data: {
             topK: 1,
             vector: embedding,
-            includeValues: false,
+            includeValues: true,
             includeMetadata: true,
           },
-        }).matches;
+        })).matches;
         console.log(tQueriedMatch);
         const wrMaybeMatch = tQueriedMatch.filter((match) => Math.abs(match.score - 1) < 0.25)
           .map(({ score, id, values, metadata }) => ({
@@ -104,9 +105,10 @@ var process;
               externalIds: new Set(JSON.parse(metadata.external_ids)),
             },
           }));
-        contentEmbeddingsBatch[-1].push({
+        const lidx = contentEmbeddingsBatch.length - 1;
+        contentEmbeddingsBatch[lidx].push({
           embedding,
-          content: contentsBatch[contentEmbeddingsBatch.length - 1][contentEmbeddingsBatch[-1].length],
+          content: contentsBatch[lidx][contentEmbeddingsBatch[lidx].length],
           maybeKnobaMatch: wrMaybeMatch.length > 0 ? wrMaybeMatch[0] : undefined,
         });
         return contentEmbeddingsBatch;
@@ -168,7 +170,7 @@ var process;
                 ud: { u: new Set() },
               };
             }
-            mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId].u.add(uqExternalIdsBatch[index]);
+            mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId].ud.u.add(uqExternalIdsBatch[index]);
           });
           return mudKnobaIdContents;
         }, {});
@@ -277,7 +279,7 @@ var process;
                 values: uKnobaIdContent.embedding,
                 metadata: {
                   content: uKnobaIdContent.content,
-                  external_ids: uKnobaIdContent.externalIds,
+                  external_ids: JSON.stringify(Array.from(uKnobaIdContent.externalIds)),
                 },
               })),
             },
@@ -318,8 +320,6 @@ var process;
                       data: {
                         requests: [
                           {
-                            // can change from a replace text to overwrite entire doc with materialization
-                            // need external_ids to be ordered list not set
                             replaceAllText: {
                               containsText: {
                                 text: dKnobaIdContent.content,
