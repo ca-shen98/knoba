@@ -1,6 +1,7 @@
+import assert from 'node:assert';
 import { v4 as uuidv4 } from 'uuid'
 import { axios } from "@pipedream/platform"
-var process, assert;
+var process;
     
     type KnobaIdContent = {
       knobaId: string,
@@ -8,85 +9,15 @@ var process, assert;
       content: string,
       externalIds: Set<string>,
     };
-    export async function handleRemove(qExternalIdsBatch: string[], $): Promise<void> {
-      const mKnobaIdsBatch: Set<string>[] = await Promise.all(qExternalIdsBatch.map(async (qExternalId) => {
-        const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
-        return mKnobaIdsStr ? new Set(JSON.parse(mKnobaIdsStr)) : new Set();
-      })); // need to get initial state before following mutate
-      await Promise.all(qExternalIdsBatch.map(async (qExternalId) => await $.myDatastore.delete(qExternalId)));
-      const fmKnobaIds = new Set(mKnobaIdsBatch.map((mKnobaIds) => Array.from(mKnobaIds)).flat());
-      const fetchedContent = fmKnobaIds.size > 0
-        ? (await axios($, {
-          method: "GET",
-          url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
-          headers: {
-            "Api-Key": `${$.pinecone.$auth.api_key}`,
-          },
-          data: { ids: fmKnobaIds },
-        })).vectors : {};
-      console.log(fetchedContent);
-      assert(Object.keys(fetchedContent).length == fmKnobaIds.size);
-      type GDUKnobaIdContents = { deletes: Set<string>, dupserts: { [knobaId: string]: KnobaIdContent } };
-      const gduKnobaIdContents: GDUKnobaIdContents = mKnobaIdsBatch
-        .reduce((gduKnobaIdContents, mKnobaIds, index) => {
-          mKnobaIds.forEach((mKnobaId) => {
-            assert(!gduKnobaIdContents.deletes.has(mKnobaId));
-            const externalIds = mKnobaId in gduKnobaIdContents.dupserts
-              ? gduKnobaIdContents.dupserts[mKnobaId].externalIds
-              : new Set(JSON.parse(fetchedContent[mKnobaId].metadata.external_ids));
-            if (externalIds.size == 1 && externalIds.has(qExternalIdsBatch[index])) {
-              delete gduKnobaIdContents.dupserts[mKnobaId];
-              gduKnobaIdContents.deletes.add(mKnobaId);
-            } else {
-              if (!(mKnobaId in gduKnobaIdContents.dupserts)) {
-                gduKnobaIdContents.dupserts[mKnobaId] = {
-                  knobaId: fetchedContent[mKnobaId].id,
-                  embedding: fetchedContent[mKnobaId].values,
-                  content: fetchedContent[mKnobaId].metadata.content,
-                  externalIds: new Set(externalIds),
-                };
-              }
-              gduKnobaIdContents.dupserts[mKnobaId].externalIds.delete(qExternalIdsBatch[index]);
-            }
-          });
-          return gduKnobaIdContents;
-        }, { deletes: new Set<string>(), dupserts: {} });
-      assert(gduKnobaIdContents.deletes.size + Object.keys(gduKnobaIdContents.dupserts).length == fmKnobaIds.size);
-      assert(new Set(Array.from(gduKnobaIdContents.deletes)
-        .concat(Object.keys(gduKnobaIdContents.dupserts)))
-        .size == fmKnobaIds.size)
-      assert(Object.values(gduKnobaIdContents.dupserts).every(({ externalIds }) => externalIds.size > 0));
-      const emptyPromises: Promise<any>[] = [];
-      await Promise.all(emptyPromises
-        .concat(gduKnobaIdContents.deletes.size > 0
-          ? [axios($, {
-            method: "POST",
-            url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/delete`,
-            headers: {
-              "Api-Key": `${$.pinecone.$auth.api_key}`,
-            },
-            data: { ids: gduKnobaIdContents.deletes },
-          })] : [])
-        .concat(Object.values(gduKnobaIdContents.dupserts).length > 0
-          ? [axios($, {
-            method: "POST",
-            url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/upsert`,
-            headers: {
-              "Api-Key": `${$.pinecone.$auth.api_key}`,
-            },
-            data: {
-              vectors: Object.values(gduKnobaIdContents.dupserts).map((gduKnobaIdContent) => ({
-                id: gduKnobaIdContent.knobaId,
-                values: gduKnobaIdContent.embedding,
-                metadata: {
-                  content: gduKnobaIdContent.content,
-                  external_ids: gduKnobaIdContent.externalIds,
-                },
-              })),
-            },
-          })]: [])
-      );
-    };
+    type KnobaMatch = { score: number, match: KnobaIdContent };
+    type IngestedContentDataItem = { embedding: number[], content: string, maybeKnobaMatch?: KnobaMatch };
+    type MUDKnobaIdContent = { uKnobaIdContent: KnobaIdContent, dKnobaIdContent?: KnobaIdContent };
+    type MUDKnobaIdContents = { [knobaId: string]: {
+      knobaIdContents?: MUDKnobaIdContent,
+      ud: { u?: Set<string>, d?: Set<string> },
+    } };
+    type GUDKnobaIdContents = { deletes: string[], upserts: MUDKnobaIdContent[] };
+
     async function getContentsBatch(qExternalIdsBatch: string[], $): Promise<string[][]> {
       return await Promise.all(qExternalIdsBatch.map(async (qExternalId) => {
         const prefixSplitIdx = qExternalId.indexOf("_");
@@ -125,8 +56,6 @@ var process, assert;
         }
       }));
     };
-    type KnobaMatch = { score: number, match: KnobaIdContent };
-    type IngestedContentDataItem = { embedding: number[], content: string, maybeKnobaMatch?: KnobaMatch };
     async function getIngestedContentDataBatch(qExternalIdsBatch: string[], $): Promise<IngestedContentDataItem[][]> {
       const contentsBatch = await getContentsBatch(qExternalIdsBatch, $);
       const fContentsBatch = contentsBatch.flat();
@@ -147,7 +76,8 @@ var process, assert;
       console.log(fEmbeddingsBatch);
       assert(fEmbeddingsBatch.length == fContentsBatch.length);
       return await fEmbeddingsBatch.reduce(async (contentEmbeddingsBatch, embedding) => {
-        while (contentEmbeddingsBatch[-1].length >= contentsBatch[contentEmbeddingsBatch.length - 1].length) {
+        while (contentEmbeddingsBatch.length == 0
+          || contentEmbeddingsBatch[-1].length >= contentsBatch[contentEmbeddingsBatch.length - 1].length) {
           contentEmbeddingsBatch.push([]);
         }
         const tQueriedMatch = await axios($, {
@@ -182,8 +112,11 @@ var process, assert;
         return contentEmbeddingsBatch;
       }, []);
     };
-    export async function handleUpsert(qExternalIdsBatch: string[], $): Promise<void> {
-      const udKnobaIdContentsBatch = (await getIngestedContentDataBatch(qExternalIdsBatch, $))
+    async function handlReceive(uqExternalIdsBatch: string[], dqExternalIdsBatch: string[], $): Promise<void> {
+      assert(uqExternalIdsBatch.length + dqExternalIdsBatch.length
+        == new Set(uqExternalIdsBatch.concat(dqExternalIdsBatch)).size,
+        "no duplicates => partitioned");
+      const udKnobaIdContentsBatch = (await getIngestedContentDataBatch(uqExternalIdsBatch, $))
         .map((inContentData, index) => inContentData.map(({ content, embedding, maybeKnobaMatch }) => {
           if (maybeKnobaMatch && Math.abs(maybeKnobaMatch.score - 1) < 0.1) {
             return {
@@ -191,7 +124,7 @@ var process, assert;
                 knobaId: maybeKnobaMatch.match.knobaId,
                 embedding,
                 content,
-                externalIds: new Set(maybeKnobaMatch.match.externalIds).add(qExternalIdsBatch[index]),
+                externalIds: new Set(maybeKnobaMatch.match.externalIds).add(uqExternalIdsBatch[index]),
               },
               ...(Math.abs(maybeKnobaMatch.score - 1) < 0.01 && { dKnobaIdContent: {
                 knobaId: maybeKnobaMatch.match.knobaId,
@@ -206,29 +139,26 @@ var process, assert;
                 knobaId: uuidv4(),
                 embedding,
                 content,
-                externalIds: new Set(qExternalIdsBatch[index]),
+                externalIds: new Set(uqExternalIdsBatch[index]),
               },
             };
           }
-        }));
-      assert(udKnobaIdContentsBatch.length == qExternalIdsBatch.length);
-      const mKnobaIdsBatch: Set<string>[] = await Promise.all(qExternalIdsBatch.map(async (qExternalId) => {
-        const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
-        return mKnobaIdsStr ? new Set(JSON.parse(mKnobaIdsStr)) : new Set();
-      })); // need to get initial state before following mutate
+        }))
+        .concat(dqExternalIdsBatch.map(() => []));
+      const mKnobaIdsBatch: Set<string>[] = await Promise.all(uqExternalIdsBatch.concat(dqExternalIdsBatch)
+        .map(async (qExternalId) => {
+          const mKnobaIdsStr = await $.myDatastore.get(qExternalId);
+          return mKnobaIdsStr ? new Set(JSON.parse(mKnobaIdsStr)) : new Set();
+        })); // need to get initial state before following mutate
+      assert(udKnobaIdContentsBatch.length == uqExternalIdsBatch.length + dqExternalIdsBatch.length);
       await Promise.all(udKnobaIdContentsBatch.map(async (udKnobaIdContents, index) => {
         const onKnobaIds = udKnobaIdContents.map(({ uKnobaIdContent: { knobaId } }) => knobaId);
         if (onKnobaIds.length > 0) {
-          await $.myDatastore.set(qExternalIdsBatch[index], JSON.stringify(onKnobaIds));
+          await $.myDatastore.set(uqExternalIdsBatch[index], JSON.stringify(onKnobaIds));
         } else {
-          await $.myDatastore.delete(qExternalIdsBatch[index]);
+          await $.myDatastore.delete(uqExternalIdsBatch[index]);
         }
       }));
-      type MUDKnobaIdContent = { uKnobaIdContent: KnobaIdContent, dKnobaIdContent?: KnobaIdContent };
-      type MUDKnobaIdContents = { [knobaId: string]: {
-        knobaIdContents?: MUDKnobaIdContent,
-        ud: { u?: Set<string>, d?: Set<string> },
-      } };
       const mudKnobaIdContents: MUDKnobaIdContents = udKnobaIdContentsBatch
         .reduce((mudKnobaIdContents, udKnobaIdContents, index) => {
           udKnobaIdContents.forEach((udKnobaIdContent) => {
@@ -238,25 +168,25 @@ var process, assert;
                 ud: { u: new Set() },
               };
             }
-            mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId].u.add(qExternalIdsBatch[index]);
+            mudKnobaIdContents[udKnobaIdContent.uKnobaIdContent.knobaId].u.add(uqExternalIdsBatch[index]);
           });
           return mudKnobaIdContents;
         }, {});
-      // combine remove into here?
       mKnobaIdsBatch.forEach((mKnobaIds, index) => mKnobaIds.forEach((mKnobaId) => {
         if (!(mKnobaId in mudKnobaIdContents)) {
           mudKnobaIdContents[mKnobaId] = { ud: {} };
         }
         if (!("u" in mudKnobaIdContents[mKnobaId].ud)
-          || !mudKnobaIdContents[mKnobaId].ud.u?.has(qExternalIdsBatch[index])) {
+          || !mudKnobaIdContents[mKnobaId].ud.u?.has(uqExternalIdsBatch[index])) {
           if (!("d" in mudKnobaIdContents[mKnobaId].ud)) {
             mudKnobaIdContents[mKnobaId].ud.d = new Set();
           }
-          mudKnobaIdContents[mKnobaId].ud.d?.add(qExternalIdsBatch[index]);
+          mudKnobaIdContents[mKnobaId].ud.d?.add(uqExternalIdsBatch[index]);
         }
       }));
-      assert(Array.from(new Set(mKnobaIdsBatch.map((mKnobaIds) => Array.from(mKnobaIds)).flat()))
-        .every((mKnobaId) => mKnobaId in mudKnobaIdContents));
+      assert(Array.from(new Set(mKnobaIdsBatch.map((mKnobaIds) => Array.from(mKnobaIds)).flat()
+        .concat(udKnobaIdContentsBatch.flat().map(({ uKnobaIdContent: { knobaId } }) => knobaId))))
+          .every((mudKnobaId) => mudKnobaId in mudKnobaIdContents));
       const dKnobaIds = Object.keys(mudKnobaIdContents)
         .filter((mudKnobaId) => !("u" in mudKnobaIdContents[mudKnobaId].ud));
       const fetchedContent = dKnobaIds.length > 0
@@ -270,7 +200,6 @@ var process, assert;
         })).vectors : {};
       console.log(fetchedContent);
       assert(Object.keys(fetchedContent).length == dKnobaIds.length);
-      type GUDKnobaIdContents = { deletes: string[], upserts: MUDKnobaIdContent[] };
       const gudKnobaIdContents = Object.entries(mudKnobaIdContents)
         .reduce((gudKnobaIdContents: GUDKnobaIdContents,
           [mudKnobaId, { knobaIdContents, ud: { u: uqExternalIds, d: dqExternalIds } }]) => {
@@ -279,9 +208,9 @@ var process, assert;
             assert(mudKnobaId in fetchedContent);
             if (dqExternalIds) {
               const fExternalIds: Set<string> = new Set(JSON.parse(fetchedContent[mudKnobaId].metadata.external_ids));
-              if (fExternalIds.size == dqExternalIds.size
-                && Array.from(fExternalIds).every((fExternalId) => dqExternalIds.has(fExternalId))) {
-                  gudKnobaIdContents.deletes.push(mudKnobaId);
+              assert(Array.from(dqExternalIds).every((dqExternalId) => fExternalIds.has(dqExternalId)));
+              if (fExternalIds.size == dqExternalIds.size) {
+                gudKnobaIdContents.deletes.push(mudKnobaId);
               } else {
                 assert(fExternalIds.size > dqExternalIds.size)
                 dqExternalIds.forEach((dqExternalId) => fExternalIds.delete(dqExternalId));
@@ -326,6 +255,15 @@ var process, assert;
         .filter((udKnobaIdContent) => "dKnobaIdContent" in udKnobaIdContent);
       const emptyPromises: Promise<any>[] = [];
       await Promise.all(emptyPromises
+        .concat(gudKnobaIdContents.deletes.length > 0
+          ? [axios($, {
+            method: "POST",
+            url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/delete`,
+            headers: {
+              "Api-Key": `${$.pinecone.$auth.api_key}`,
+            },
+            data: { ids: gudKnobaIdContents.deletes },
+          })] : [])
         .concat(gudKnobaIdContents.upserts.length > 0
           ? [axios($, {
             method: "POST",
@@ -344,18 +282,9 @@ var process, assert;
               })),
             },
           })] : [])
-        .concat(gudKnobaIdContents.deletes.length > 0
-          ? [axios($, {
-            method: "POST",
-            url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/delete`,
-            headers: {
-              "Api-Key": `${$.pinecone.$auth.api_key}`,
-            },
-            data: { ids: gudKnobaIdContents.deletes },
-          })] : [])
         .concat(contentUpserts.length > 0
-          ? [Promise.all(contentUpserts.map(async ({ uKnobaIdContent, dKnobaIdContent }) => await Promise.all(
-            Array.from(uKnobaIdContent.externalIds)
+          ? [Promise.all(contentUpserts.map(async ({ uKnobaIdContent, dKnobaIdContent }) =>
+            await Promise.all(Array.from(uKnobaIdContent.externalIds)
               .map(async (externalId) => {
                 assert(dKnobaIdContent);
                 if (dKnobaIdContent) {
@@ -389,6 +318,8 @@ var process, assert;
                       data: {
                         requests: [
                           {
+                            // can change from a replace text to overwrite entire doc with materialization
+                            // need external_ids to be ordered list not set
                             replaceAllText: {
                               containsText: {
                                 text: dKnobaIdContent.content,
@@ -402,7 +333,7 @@ var process, assert;
                     });
                   }
                 }
-              })
-          )))] : [])
+              }))
+            ))] : [])
       );
     };
