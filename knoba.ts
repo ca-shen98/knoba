@@ -221,14 +221,16 @@ var process;
           && mudCandDeltExtIds.u.size + mudCandDeltExtIds.d.size
             == new Set(Array.from(mudCandDeltExtIds.u).concat(Array.from(mudCandDeltExtIds.d))).size,
           "non empty and no duplicates (implies partitioned as well)");
+        assert(mudCandDeltExtIds.d.size <= udKnobaContent.knobaMatch.vals.externalIds.size);
+        assert(Array.from(mudCandDeltExtIds.d)
+          .every((dCandDeltExtId) => udKnobaContent.knobaMatch.vals.externalIds.has(dCandDeltExtId)));
         if (mudCandDeltExtIds.u.size == 0
           && udKnobaContent.knobaMatch.vals.externalIds.size == mudCandDeltExtIds.d.size) {
-          assert(Array.from(mudCandDeltExtIds.d)
-            .every((dCandDeltExtId) => udKnobaContent.knobaMatch.vals.externalIds.has(dCandDeltExtId)));
           dKnobaIds.add(mudKnobaId);
         } else {
-          if (Array.from(mudCandDeltExtIds.u).concat(Array.from(mudCandDeltExtIds.d))
+          if (mudCandDeltExtIds.d.size > 0 || Array.from(mudCandDeltExtIds.u)
             .some((mudCandDeltExtId) => !udKnobaContent.knobaMatch.vals.externalIds.has(mudCandDeltExtId))) {
+            // external ids as short circuit first branch of if because it has the extra mutation side effects
             mudCandDeltExtIds.u.forEach((uCandDeltExtIds) =>
               udKnobaContent.knobaMatch.vals.externalIds.add(uCandDeltExtIds));
             mudCandDeltExtIds.d.forEach((dCandDeltExtIds) =>
@@ -374,7 +376,7 @@ var process;
               assert(mKnobaIdsStr);
               const mKnobaIds = JSON.parse(mKnobaIdsStr);
               assert(mKnobaIds.length > 0);
-              // TODO in memory request batch scoped content repository/cache beyond uKnobaContents
+              // TODO in memory request batch scoped content repository beyond uKnobaContents
               const fKnobaIds = mKnobaIds.filter((mKnobaId) => !(mKnobaId in uKnobaContents));
               const fKnobaContents = fKnobaIds.length > 0
                 ? (await axios($, {
