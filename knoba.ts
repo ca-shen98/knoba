@@ -106,11 +106,13 @@ var process;
           : {
             score: 1,
             vals: {
-              knobaId: uuidv4(),
+              knobaId: uuidv4(), // ignoring collision handling
               content: contentsBatch[lidx][udKnobaContentsBatch[lidx].length],
               externalIds: new Set([uqExternalIdsBatch[lidx]]),
             },
           };
+        assert(knobaMatch.vals.content.trim().length > 0);
+        assert(knobaMatch.vals.externalIds.size > 0);
         if (wrMaybeMatch.length == 0) {
           // upsert inline immediately instead of batch for later because subsequent "new" content may be same
           await axios($, {
@@ -203,6 +205,7 @@ var process;
             },
             mudCandDeltExtIds: { u: new Set(), d: new Set() },
           };
+          assert(mudKnobaIdChanges[mKnobaId].udKnobaContent.knobaMatch.vals.externalIds.size > 0);
         }
         if (!mudKnobaIdChanges[mKnobaId].mudCandDeltExtIds.u.has(tqExternalIdsBatch[index])) {
           mudKnobaIdChanges[mKnobaId].mudCandDeltExtIds.d.add(tqExternalIdsBatch[index]);
@@ -245,7 +248,7 @@ var process;
           },
           data: { ids: dKnobaIds },
         });
-      } // delete before ...
+      } // delete before sqrBatch to avoid unneccessary computing for to-be-deleted with empty externalIds
       const stagedKnobaReplacements: { [knobaId: string]: KnobaMatch } = {};
       await Promise.all(Object.values(uKnobaContents)
         .filter(({ knobaMatch: { score }}) => Math.abs(score - 1) > 0.01)
@@ -280,6 +283,8 @@ var process;
             if (wrMaybeMatch.length > 0) {
               if (!(wrMaybeMatch[0].vals.knobaId in uKnobaContents)
                 || !(wrMaybeMatch[0].vals.knobaId in stagedKnobaReplacements)) {
+                assert(wrMaybeMatch[0].vals.externalIds.size > 0);
+                assert(wrMaybeMatch[0].vals.content.trim().length > 0);
                 const replacementCompletionChoices = (await axios($, {
                   method: "POST",
                   url: "https://api.openai.com/v1/completions",
