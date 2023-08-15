@@ -369,12 +369,30 @@ var process;
                   },
                 },
               });
-            } else if (externalId.startsWith("gdocs_")) { // TODO set up request scoped content repository/cache
+            } else if (externalId.startsWith("gdocs_")) {
               const mKnobaIdsStr = await $.myDatastore.get(externalId);
               assert(mKnobaIdsStr);
               const mKnobaIds = JSON.parse(mKnobaIdsStr);
               assert(mKnobaIds.length > 0);
-              const materializedContent = await Promise.all(mKnobaIds.map((mKnobaId) => uKnobaContents[mKnobaId].content)); // TODO
+              // TODO in memory request batch scoped content repository/cache beyond uKnobaContents
+              const fKnobaIds = mKnobaIds.filter((mKnobaId) => !(mKnobaId in uKnobaContents));
+              const fKnobaContents = fKnobaIds.length > 0
+                ? (await axios($, {
+                  method: "GET",
+                  url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
+                  headers: {
+                    "Api-Key": `${$.pinecone.$auth.api_key}`,
+                  },
+                  data: { ids: fKnobaIds },
+                })).vectors : {};
+              assert(mKnobaIds.every((mKnobaId) => mKnobaId in uKnobaContents || mKnobaId in fKnobaContents));
+              const materializedContent = mKnobaIds.map((mKnobaId) => {
+                if (mKnobaId in uKnobaContents) {
+                  return uKnobaContents[mKnobaId].content;
+                } else {
+                  return fKnobaContents[mKnobaId].metadata.content;
+                }
+              });
               const gdocsGetBodyResp = await axios($, {
                 method: "GET",
                 url: `https://docs.googleapis.com/v1/documents/${externalId.substring(6)}`,
