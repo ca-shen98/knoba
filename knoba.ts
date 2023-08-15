@@ -168,7 +168,8 @@ var process;
             mudKnobaIdChanges[udKnobaContent.knobaMatch.vals.knobaId].mudCandDeltExtIds.u.add(tqExternalIdsBatch[index]);
           });
           return mudKnobaIdChanges;
-        }, {}); // need to map knobaIds from udBatch before dmBatch ..., before queryBatch(wrMaybeMatch) ...
+        }, {}); // need to map knobaIds from udBatch before duBatch to be able to use udBatch as filter,
+                // don't update inline with sqrBatch(wrMaybeMatch) because need complete externalId states
       const duKnobaIds = Array.from(new Set(mKnobaIdsBatch.map((mKnobaIds) => Array.from(mKnobaIds)).flat()))
         .filter((dKnobaId) => !(dKnobaId in mudKnobaIdChanges));
       const fdKnobaContent = duKnobaIds.length > 0
@@ -208,6 +209,7 @@ var process;
         }
       }));
       assert(fmKnobaIdsSet.every((fmKnobaId) => fmKnobaId in mudKnobaIdChanges));
+      // TODO asserts/invariants/assumptions, sequencing comments
       const dKnobaIds = new Set();
       const uKnobaContents: { [knobaId: string]: UDKnobaContent } = {};
       for (const mudKnobaId in mudKnobaIdChanges) {
@@ -362,7 +364,7 @@ var process;
                   },
                 },
               });
-            } else if (externalId.startsWith("gdocs_")) { // set up request scoped content repository/cache
+            } else if (externalId.startsWith("gdocs_")) { // TODO set up request scoped content repository/cache
               const mKnobaIdsStr = await $.myDatastore.get(externalId);
               assert(mKnobaIdsStr);
               const mKnobaIds = JSON.parse(mKnobaIdsStr);
