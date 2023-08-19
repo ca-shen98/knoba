@@ -1,0 +1,28 @@
+uqExternalIds: string[], dqExternalIds: string[]
+assert uqExternalIds + dqExternalIds have no duplicates
+
+uqExternalIds -fetch-> inContentsBatch: string[][]
+?assert each contents non empty
+inContentsBatch.flatten() -compute-> inEmbeddingsBatch: number[][]
+inContentsBatch, inEmbeddingsBatch -unflatten,fetch foreach-> udKnobaContentsBatch: UDKnobaContent[][], side effect pinecone inserts
+?assert each KnobaContentMatch content, externalIds non empty
+assert udKnobaContentsBatch has same shape as inContentsBatch
+
+uqExternalIds, dqExternalIds -fetch-> oldKnobaIds: Set<string>
+udKnobaContentsBatch -dupsert-> side effect kvdatastore dupserts
+
+udKnobaContentsBatch -pivot-> mudKnobaIdChanges: { [knobaId]: { UDKnobaContent, mudCandDeltExtIds } }
+?assume duplicates same
+oldKnobaIds, mudKnobaIdChanges -diff-> duKnobaIds: Set<string>/string[]
+duKnobaIds -fetch-> fdKnobaContent: { [knobaId]: KnobaProps }
+?assert each KnobaContentMatch content, externalIds non empty
+oldKnobaIds, fdKnobaContent -> mutate mudKnobaIdChanges
+?assert every knobaId in udKnobaContentsBatch + oldKnobaIds in mudKnobaIdChanges
+
+mudKnobaIdChanges -group-> dKnobaIds: Set<string>, uKnobaContents: { [knobaId]: UDKnobaContent }
+?assert each ...
+dKnobaIds -dupsert-> side effect pinecone deletes
+uKnobaContents -generate-> stagedReplacesBatch: KnobaMatch[]
+stagedReplacesBatch -compute-> stagedReplacesEmbeddingsBatch: string[]
+stagedReplacesBatch, stagedReplacesEmbeddingsBatch -> mutate uKnobaContents
+uKnobaContents -> side effect pinecone upserts, externalId materialization upserts

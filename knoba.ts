@@ -77,7 +77,7 @@ var process;
           "can push next item");
         while (udKnobaContentsBatch.length == 0
           || udKnobaContentsBatch[lidx].length == contentsBatch[lidx].length) {
-            udKnobaContentsBatch.push([]);
+          udKnobaContentsBatch.push([]);
           lidx += 1;
         }
         const tQueriedMatch = (await axios($, {
@@ -212,7 +212,7 @@ var process;
         }
       }));
       assert(fmKnobaIdsSet.every((fmKnobaId) => fmKnobaId in mudKnobaIdChanges));
-      // TODO asserts/invariants/assumptions, sequencing comments
+      // TODO asserts/invariants/assumptions, non empty external ids?, sequencing comments; time/space optimizations
       const dKnobaIds = new Set();
       const uKnobaContents: { [knobaId: string]: UDKnobaContent } = {};
       for (const mudKnobaId in mudKnobaIdChanges) {
@@ -251,7 +251,7 @@ var process;
           data: { ids: dKnobaIds },
         });
       } // delete before sqrBatch to avoid unneccessary computing for to-be-deleted with empty externalIds
-      const stagedKnobaReplacements: { [knobaId: string]: KnobaMatch } = {};
+      const stagedKnobaReplacements: { [knobaId: string]: UDKnobaContent } = {};
       await Promise.all(Object.values(uKnobaContents)
         .filter(({ knobaMatch: { score }}) => Math.abs(score - 1) > 0.01)
         .map(async (udKnobaContent) => {
@@ -304,12 +304,9 @@ var process;
                 })).choices;
                 console.log(replacementCompletionChoices);
                 stagedKnobaReplacements[wrMaybeMatch[0].vals.knobaId] = {
-                  score: wrMaybeMatch[0].score,
-                  vals: {
-                    knobaId: wrMaybeMatch[0].vals.knobaId,
-                    content: replacementCompletionChoices[0].text,
-                    externalIds: wrMaybeMatch[0].vals.externalIds,
-                  },
+                  embedding: [],
+                  content: replacementCompletionChoices[0].text,
+                  knobaMatch: wrMaybeMatch[0],
                 };
               }
             }
@@ -325,33 +322,48 @@ var process;
           },
           data: {
             model: "text-embedding-ada-002",
-            input: stagedKnobaReplacementsBatch.map(({ vals: { content } }) => content),
+            input: stagedKnobaReplacementsBatch.map(({ content }) => content),
           },
         })).data : [];
       console.log(replEmbeddingsBatch);
       assert(replEmbeddingsBatch.length == stagedKnobaReplacementsBatch.length);
       stagedKnobaReplacementsBatch.forEach((stagedKnobaReplacement, index) => {
-        uKnobaContents[stagedKnobaReplacement.vals.knobaId] = {
+        uKnobaContents[stagedKnobaReplacement.knobaMatch.vals.knobaId] = {
           embedding: replEmbeddingsBatch[index].embedding,
-          content: stagedKnobaReplacement.vals.content,
+          content: stagedKnobaReplacement.content,
           knobaMatch: {
-            score: stagedKnobaReplacement.score,
+            score: stagedKnobaReplacement.knobaMatch.score,
             vals: {
-              knobaId: stagedKnobaReplacement.vals.knobaId,
-              content: stagedKnobaReplacement.vals.content,
-              externalIds: uKnobaContents[stagedKnobaReplacement.vals.knobaId]?.knobaMatch.vals.externalIds
-                ?? stagedKnobaReplacement.vals.externalIds,
+              knobaId: stagedKnobaReplacement.knobaMatch.vals.knobaId,
+              content: stagedKnobaReplacement.knobaMatch.vals.content,
+              externalIds:
+                uKnobaContents[stagedKnobaReplacement.knobaMatch.vals.knobaId]?.knobaMatch.vals.externalIds
+                  ?? stagedKnobaReplacement.knobaMatch.vals.externalIds,
             },
           },
         }
       });
-      assert(Object.values(uKnobaContents)
-        .every(({ knobaMatch: { vals: { externalIds } } }) => externalIds.size > 0));
-      await Promise.all(Object.values(uKnobaContents)
-        .filter(({ knobaMatch: { score } }) => Math.abs(score - 1) > 0.01).map(async (uKnobaContent) =>
-          await Promise.all(Array.from(uKnobaContent.knobaMatch.vals.externalIds).map(async (externalId) => {
-            assert(Math.abs(uKnobaContent.knobaMatch.score - 1) > 0.01);
+      const contentUpsertExternalIds = Array.from(new Set(Object.values(uKnobaContents)
+        .filter(({ knobaMatch: { score } }) => Math.abs(score - 1) > 0.01)
+        .map((uKnobaContent) => Array.from(uKnobaContent.knobaMatch.vals.externalIds)).flat()));
+      await Promise.all(contentUpsertExternalIds.map(async (externalId) => {
+            const mKnobaIdsStr = await $.myDatastore.get(externalId);
+            assert(mKnobaIdsStr);
+            const mKnobaIds = JSON.parse(mKnobaIdsStr);
+            assert(mKnobaIds.length > 0);
+            // assert(Math.abs(uKnobaContent.knobaMatch.score - 1) > 0.01);
             if (externalId.startsWith("notion_")) {
+              assert(mKnobaIds.length == 1)
+              const materializedContent = mKnobaIds[0] in uKnobaContents
+                ? uKnobaContents[mKnobaIds[0]].content
+                : (await axios($, {
+                  method: "GET",
+                  url: `https://${process.env.pinecone_index}-${process.env.pinecone_project}.svc.${$.pinecone.$auth.environment}.pinecone.io/vectors/fetch`,
+                  headers: {
+                    "Api-Key": `${$.pinecone.$auth.api_key}`,
+                  },
+                  data: { ids: mKnobaIds },
+                })).vectors[mKnobaIds[0]].metadata.content;
               await axios($, {
                 method: "PATCH",
                 url: `https://api.notion.com/v1/blocks/${externalId.substring(7)}`,
@@ -364,7 +376,7 @@ var process;
                     rich_text: [
                       {
                         text: {
-                          content: uKnobaContent.content,
+                          content: materializedContent,
                         },
                       },
                     ],
@@ -372,10 +384,6 @@ var process;
                 },
               });
             } else if (externalId.startsWith("gdocs_")) {
-              const mKnobaIdsStr = await $.myDatastore.get(externalId);
-              assert(mKnobaIdsStr);
-              const mKnobaIds = JSON.parse(mKnobaIdsStr);
-              assert(mKnobaIds.length > 0);
               // TODO in memory request batch scoped content repository beyond uKnobaContents
               const fKnobaIds = mKnobaIds.filter((mKnobaId) => !(mKnobaId in uKnobaContents));
               const fKnobaContents = fKnobaIds.length > 0
